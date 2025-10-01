@@ -247,6 +247,11 @@ func main() {
 				if err != nil { return }
 				code, sum, ok := requestURL(u)
 				if !ok { return }
+				
+				// Debug output
+				if code != 404 {
+					fmt.Fprintf(os.Stderr, "DEBUG: %d %s (depth=%d, errors=%d)\n", code, u, t.depth, t.errorCount)
+				}
 				// Error tolerance depth logic: -d 1=stop on non-200, -d 2=allow 1 error level, -d 3=allow 2 error levels
 				if t.withSlash {
 					_, skip := excluded[code]
@@ -291,10 +296,13 @@ func main() {
 							nextPrefix := path.Join(t.prefix, t.word)
 							add := len(words) * 2
 							pending.Add(add)
+							fmt.Fprintf(os.Stderr, "DEBUG: Recursing from %s (errors=%d->%d, adding %d tasks)\n", u, t.errorCount, newErrorCount, add)
 							for _, w := range words {
 								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false, errorCount: newErrorCount}
 								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true, errorCount: newErrorCount}
 							}
+						} else {
+							fmt.Fprintf(os.Stderr, "DEBUG: Stopping recursion at %s (errors=%d, max=%d)\n", u, newErrorCount, maxDepth)
 						}
 					}
 				}
@@ -305,7 +313,9 @@ func main() {
 	for i := 0; i < concurrency; i++ { wg.Add(1); go worker() }
 
 	// seed: all words at root, both variants
-	pending.Add(len(words) * 2)
+	seedTasks := len(words) * 2
+	pending.Add(seedTasks)
+	fmt.Fprintf(os.Stderr, "DEBUG: Seeding %d initial tasks\n", seedTasks)
 	for _, w := range words {
 		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: false, errorCount: 0}
 		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: true, errorCount: 0}
