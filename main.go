@@ -322,10 +322,14 @@ func main() {
 		}
 		
 		testWords := []string{"test123xyz", "random456abc", "check789def"}
-		testHashes := make([]string, 0, len(testWords))
+		type testResult struct {
+			hash   string
+			status int
+		}
+		testResults := make([]testResult, 0, len(testWords))
 		
 		for _, testWord := range testWords {
-			testURL, err := buildURL(baseURL, prefix, testWord, true)
+			testURL, err := buildURL(baseURL, prefix, testWord, false)
 			if err != nil {
 				continue
 			}
@@ -340,28 +344,33 @@ func main() {
 				continue
 			}
 			
-			if testResp.StatusCode == 200 {
+			status := testResp.StatusCode
+			var testHash string
+			
+			// Hash content for ALL responses (not just 200s)
+			if status != 404 {
 				lr := io.LimitReader(testResp.Body, 256*1024)
 				h := sha1.New()
 				io.Copy(h, lr)
-				testHash := fmt.Sprintf("%x", h.Sum(nil))
-				testResp.Body.Close()
-				testHashes = append(testHashes, testHash)
-				
-				if debug {
-					log.Printf("DEBUG: Pre-scan %s returned hash %s", testURL, testHash)
-				}
-			} else {
-				testResp.Body.Close()
+				testHash = fmt.Sprintf("%x", h.Sum(nil))
+			}
+			testResp.Body.Close()
+			
+			testResults = append(testResults, testResult{hash: testHash, status: status})
+			
+			if debug {
+				log.Printf("DEBUG: Pre-scan %s returned status %d, hash %s", testURL, status, testHash)
 			}
 		}
 		
-		// Check if all test words return the same content (reflective endpoint)
-		if len(testHashes) >= 2 {
+		// Check if all test words return the same response (status + content)
+		if len(testResults) >= 2 {
 			allSame := true
-			firstHash := testHashes[0]
-			for _, h := range testHashes[1:] {
-				if h != firstHash {
+			firstResult := testResults[0]
+			
+			for _, result := range testResults[1:] {
+				// Compare both status code and content hash
+				if result.status != firstResult.status || result.hash != firstResult.hash {
 					allSame = false
 					break
 				}
@@ -372,10 +381,10 @@ func main() {
 				if pathDesc == "" {
 					pathDesc = "root"
 				}
-				fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical content (hash: %s)\n", pathDesc, firstHash)
+				fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical response (status: %d, hash: %s)\n", pathDesc, firstResult.status, firstResult.hash)
 				
 				if debug {
-					log.Printf("DEBUG: Reflective endpoint detected at path '%s' - blocking recursion", pathDesc)
+					log.Printf("DEBUG: Reflective endpoint detected at path '%s' (status %d) - blocking recursion", pathDesc, firstResult.status)
 				}
 				return true
 			}
