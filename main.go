@@ -124,7 +124,7 @@ func main() {
 	var statusExcludeStr string
 
 	flag.StringVar(&base, "u", "", "Base URL, e.g. http://127.0.0.1/")
-	flag.IntVar(&maxDepth, "d", 1, "Error tolerance depth: 1=stop on non-200, 2=allow 1 error level, 3=allow 2 error levels")
+	flag.IntVar(&maxDepth, "e", 1, "Error tolerance depth: 1=stop on non-200, 2=allow 1 error level, 3=allow 2 error levels")
 	flag.IntVar(&concurrency, "c", 50, "Concurrent workers")
 	flag.StringVar(&outPath, "o", "", "Output file (optional)")
 	flag.StringVar(&wordlistPath, "w", "", "Wordlist file; omit value (-w) to auto-generate from crawl")
