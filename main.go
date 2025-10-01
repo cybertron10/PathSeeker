@@ -255,20 +255,26 @@ func main() {
 				if err != nil { return }
 				code, sum, ok := requestURL(u)
 				if !ok { return }
-				// prune recursion if same-content already seen; only recurse from the shortest path
-				if t.withSlash && code == 200 && t.depth < maxDepth {
-					norm := normalizeOutputURL(u)
-					hashMu.Lock()
-					best := hashBest[sum]
-					shouldRecurse := (best == norm)
-					hashMu.Unlock()
-					if shouldRecurse {
-						nextPrefix := path.Join(t.prefix, t.word)
-						add := len(words) * 2
-						pending.Add(add)
-						for _, w := range words {
-							reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false}
-							reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true}
+				// Recurse on slash-variant for any non-excluded status; apply content-hash pruning only for 200s
+				if t.withSlash && t.depth < maxDepth {
+					_, skip := excluded[code]
+					if !skip {
+						shouldRecurse := true
+						if code == 200 {
+							norm := normalizeOutputURL(u)
+							hashMu.Lock()
+							best := hashBest[sum]
+							shouldRecurse = (best == norm)
+							hashMu.Unlock()
+						}
+						if shouldRecurse {
+							nextPrefix := path.Join(t.prefix, t.word)
+							add := len(words) * 2
+							pending.Add(add)
+							for _, w := range words {
+								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false}
+								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true}
+							}
 						}
 					}
 				}
