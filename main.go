@@ -261,8 +261,8 @@ func main() {
 		return code, sum, false
 	}
 
-	// Pre-check function to detect infinite content loops before adding to queue
-	preCheckInfiniteLoop := func(fullURL, contentHash string) bool {
+	// Check if content hash creates an infinite loop
+	checkInfiniteLoop := func(contentHash, currentPath string) bool {
 		if contentHash == "" {
 			return false
 		}
@@ -270,32 +270,36 @@ func main() {
 		contentAncestorsMu.Lock()
 		defer contentAncestorsMu.Unlock()
 		
-		// Initialize ancestors map for this content hash if needed
+		// Check if this content hash was seen anywhere in our known paths
+		if paths, exists := contentAncestors[contentHash]; exists {
+			for knownPath := range paths {
+				// If content was seen in a parent or related path
+				if strings.HasPrefix(currentPath, knownPath) || strings.HasPrefix(knownPath, currentPath) {
+					if debug {
+						log.Printf("DEBUG: Infinite loop detected - content %s already seen at path %s (current: %s)", contentHash, knownPath, currentPath)
+					}
+					return true
+				}
+			}
+		}
+		return false
+	}
+	
+	// Record that a path has specific content (only call after deciding to recurse)
+	recordPathContent := func(contentHash, currentPath string) {
+		if contentHash == "" {
+			return
+		}
+		contentAncestorsMu.Lock()
+		defer contentAncestorsMu.Unlock()
+		
 		if contentAncestors[contentHash] == nil {
 			contentAncestors[contentHash] = make(map[string]bool)
 		}
-		
-		// Parse URL to get path for comparison
-		u, err := url.Parse(fullURL)
-		if err != nil {
-			return false
-		}
-		currentPath := u.Path
-		
-		// Check if this content hash was seen anywhere in our known paths
-		for knownPath := range contentAncestors[contentHash] {
-			// If content was seen in any path that's a prefix of current path or vice versa
-			if strings.HasPrefix(currentPath, knownPath) || strings.HasPrefix(knownPath, currentPath) {
-				if debug {
-					log.Printf("DEBUG: Pre-check blocked - content %s already seen at path %s", contentHash, knownPath)
-				}
-				return true
-			}
-		}
-		
-		// Record this path as having this content
 		contentAncestors[contentHash][currentPath] = true
-		return false
+		if debug {
+			log.Printf("DEBUG: Recorded path %s with content hash %s", currentPath, contentHash)
+		}
 	}
 
 	// Progress bar function
@@ -379,20 +383,25 @@ func main() {
 							hashMu.Unlock()
 						}
 						
-						// Use pre-check to detect infinite content loops before recursion
-						if code == 200 && sum != "" && shouldRecurse {
-							if debug {
-								log.Printf("DEBUG: Pre-checking recursion for content %s", sum)
-							}
-							// Check if any child would create an infinite loop
-							hasInfiniteLoop := preCheckInfiniteLoop(u, sum)
-							if hasInfiniteLoop {
+					// Check for infinite content loops before recursion
+					if code == 200 && sum != "" && shouldRecurse {
+						// Parse URL to get current path
+						parsedURL, err := url.Parse(u)
+						if err == nil {
+							currentPath := parsedURL.Path
+							
+							// Check if this content creates an infinite loop
+							if checkInfiniteLoop(sum, currentPath) {
 								shouldRecurse = false
 								if debug {
-									log.Printf("DEBUG: Pre-check blocked recursion for %s due to infinite loop", u)
+									log.Printf("DEBUG: Blocked recursion for %s due to infinite loop", u)
 								}
+							} else {
+								// Only record if we're going to recurse
+								recordPathContent(sum, currentPath)
 							}
 						}
+					}
 						if debug {
 							log.Printf("DEBUG: URL %s -> code %d, errorCount %d, shouldRecurse %t", u, code, newErrorCount, shouldRecurse)
 						}
