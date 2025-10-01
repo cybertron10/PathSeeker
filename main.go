@@ -228,7 +228,7 @@ func main() {
 	hashMu := &sync.Mutex{}
 
 	// track content hashes to detect infinite loops (content that repeats at deeper levels)
-	contentAncestors := make(map[string]map[string]bool) // contentHash -> set of parent URLs where this content was seen
+	contentAncestors := make(map[string]map[string]bool) // contentHash -> set of paths where this content was seen
 	contentAncestorsMu := &sync.Mutex{}
 
 	// store only 200s for final output (normalized, unique)
@@ -259,6 +259,43 @@ func main() {
 			return code, sum, true
 		}
 		return code, sum, false
+	}
+
+	// Pre-check function to detect infinite content loops before adding to queue
+	preCheckInfiniteLoop := func(fullURL, contentHash string) bool {
+		if contentHash == "" {
+			return false
+		}
+		
+		contentAncestorsMu.Lock()
+		defer contentAncestorsMu.Unlock()
+		
+		// Initialize ancestors map for this content hash if needed
+		if contentAncestors[contentHash] == nil {
+			contentAncestors[contentHash] = make(map[string]bool)
+		}
+		
+		// Parse URL to get path for comparison
+		u, err := url.Parse(fullURL)
+		if err != nil {
+			return false
+		}
+		currentPath := u.Path
+		
+		// Check if this content hash was seen anywhere in our known paths
+		for knownPath := range contentAncestors[contentHash] {
+			// If content was seen in any path that's a prefix of current path or vice versa
+			if strings.HasPrefix(currentPath, knownPath) || strings.HasPrefix(knownPath, currentPath) {
+				if debug {
+					log.Printf("DEBUG: Pre-check blocked - content %s already seen at path %s", contentHash, knownPath)
+				}
+				return true
+			}
+		}
+		
+		// Record this path as having this content
+		contentAncestors[contentHash][currentPath] = true
+		return false
 	}
 
 	// Progress bar function
@@ -342,46 +379,23 @@ func main() {
 							hashMu.Unlock()
 						}
 						
-						// Check for infinite content loops: if this content was seen in any parent path
-						contentAncestorsMu.Lock()
-						if code == 200 && sum != "" {
-							// Initialize ancestors map for this content hash if needed
-							if contentAncestors[sum] == nil {
-								contentAncestors[sum] = make(map[string]bool)
+						// Use pre-check to detect infinite content loops before recursion
+						if code == 200 && sum != "" && shouldRecurse {
+							// Build the potential child URL to check
+							childBaseURL := u
+							if debug {
+								log.Printf("DEBUG: Pre-checking recursion for content %s", sum)
 							}
 							
-							// Check all parent paths for this content
-							currentPrefix := t.prefix
-							foundInParent := false
-							for currentPrefix != "" {
-								parentPath := path.Join(basePath, currentPrefix)
-								if contentAncestors[sum][parentPath] {
-									if debug {
-										log.Printf("DEBUG: Infinite loop detected - content %s already seen at parent path %s", sum, parentPath)
-									}
-									foundInParent = true
-									break
-								}
-								// Move up to next parent
-								if strings.Contains(currentPrefix, "/") {
-									currentPrefix = path.Dir(currentPrefix)
-								} else {
-									currentPrefix = ""
-								}
-							}
-							
-							if foundInParent {
+							// Check if any child would create an infinite loop
+							hasInfiniteLoop := preCheckInfiniteLoop(u, sum)
+							if hasInfiniteLoop {
 								shouldRecurse = false
-							} else {
-								// Record this path as having this content
-								currentPath := path.Join(basePath, t.prefix, t.word)
-								if t.withSlash {
-									currentPath += "/"
+								if debug {
+									log.Printf("DEBUG: Pre-check blocked recursion for %s due to infinite loop", u)
 								}
-								contentAncestors[sum][currentPath] = true
 							}
 						}
-						contentAncestorsMu.Unlock()
 
 						if debug {
 							log.Printf("DEBUG: URL %s -> code %d, errorCount %d, shouldRecurse %t", u, code, newErrorCount, shouldRecurse)
