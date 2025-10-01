@@ -209,16 +209,16 @@ func main() {
 	hashMu := &sync.Mutex{}
 
 	// store only 200s for final output (normalized, unique)
-	final200 := make(map[string]struct{})
-	finalMu := &sync.Mutex{}
+	// final200 := make(map[string]struct{})
+	// finalMu := &sync.Mutex{}
 
-	requestURL := func(fullURL string) (int, string, bool) {
-		if _, loaded := seen.LoadOrStore(fullURL, struct{}{}); loaded { return 0, "", false }
+	requestURL := func(fullURL string) (int, bool) {
+		if _, loaded := seen.LoadOrStore(fullURL, struct{}{}); loaded { return 0, false }
 		req, err := http.NewRequest(http.MethodGet, fullURL, nil)
-		if err != nil { return 0, "", false }
+		if err != nil { return 0, false }
 		req.Header.Set("Connection", "keep-alive")
 		resp, err := client.Do(req)
-		if err != nil { return 0, "", false }
+		if err != nil { return 0, false }
 		code := resp.StatusCode
 		var sum string
 		if code == 200 {
@@ -230,14 +230,20 @@ func main() {
 		resp.Body.Close()
 		if _, skip := excluded[code]; !skip {
 			atomic.AddInt64(&hits, 1)
+			// only track 200s for final output; non-200s are ignored in final
 			if code == 200 {
-				finalMu.Lock()
-				final200[normalizeOutputURL(fullURL)] = struct{}{}
-				finalMu.Unlock()
+				// update best path for this content hash
+				hashMu.Lock()
+				best, exists := hashBest[sum]
+				norm := normalizeOutputURL(fullURL)
+				if !exists || len(norm) < len(best) {
+					hashBest[sum] = norm
+				}
+				hashMu.Unlock()
 			}
-			return code, sum, true
+			return code, true
 		}
-		return code, sum, false
+		return code, false
 	}
 
 	worker := func() {
@@ -247,14 +253,14 @@ func main() {
 				defer pending.Done()
 				u, err := buildURL(t.base, t.prefix, t.word, t.withSlash)
 				if err != nil { return }
-				code, hash, ok := requestURL(u)
+				code, ok := requestURL(u)
 				if !ok { return }
 				// prune recursion if same-content already seen at a shorter or equal path
 				if t.withSlash && code == 200 && t.depth < maxDepth {
 					hashMu.Lock()
-					best, exists := hashBest[hash]
+					best, exists := hashBest[sum]
 					if !exists || len(u) < len(best) {
-						hashBest[hash] = u
+						hashBest[sum] = u
 					}
 					shouldRecurse := !exists || len(u) <= len(best)
 					hashMu.Unlock()
@@ -284,15 +290,18 @@ func main() {
 	go func() { pending.Wait(); close(reqJobs) }()
 	wg.Wait()
 
-	// emit only 200s at the end
-	finalMu.Lock()
-	for u := range final200 {
+	// emit only 200s at the end based on content hashes
+	hashMu.Lock()
+	seenOut := make(map[string]struct{})
+	for _, u := range hashBest {
+		if _, ok := seenOut[u]; ok { continue }
+		seenOut[u] = struct{}{}
 		writer.WriteString("200 ")
 		writer.WriteString(u)
 		writer.WriteString("\n")
 		if fileWriter != nil { fileWriter.WriteString("200 "); fileWriter.WriteString(u); fileWriter.WriteString("\n") }
 	}
-	finalMu.Unlock()
+	hashMu.Unlock()
 
 	fmt.Fprintf(os.Stderr, "Scan complete; %d hits\n", atomic.LoadInt64(&hits))
 }
