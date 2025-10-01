@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"pathseeker/internal/crawler"
-	"pathseeker/internal/wordgen"
+	"github.com/cybertron10/PathSeeker/internal/crawler"
+	"github.com/cybertron10/PathSeeker/internal/wordgen"
 )
 
 // request task represents a single URL attempt and potential recursion
