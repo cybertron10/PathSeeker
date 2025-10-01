@@ -381,12 +381,9 @@ func main() {
 						
 						// Use pre-check to detect infinite content loops before recursion
 						if code == 200 && sum != "" && shouldRecurse {
-							// Build the potential child URL to check
-							childBaseURL := u
 							if debug {
 								log.Printf("DEBUG: Pre-checking recursion for content %s", sum)
 							}
-							
 							// Check if any child would create an infinite loop
 							hasInfiniteLoop := preCheckInfiniteLoop(u, sum)
 							if hasInfiniteLoop {
@@ -396,7 +393,6 @@ func main() {
 								}
 							}
 						}
-
 						if debug {
 							log.Printf("DEBUG: URL %s -> code %d, errorCount %d, shouldRecurse %t", u, code, newErrorCount, shouldRecurse)
 						}
