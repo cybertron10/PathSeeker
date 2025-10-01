@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,6 +81,18 @@ func saveWordsToFile(words []string, outPath string) error {
 	return bw.Flush()
 }
 
+func parseExcluded(statuses string) map[int]struct{} {
+	set := map[int]struct{}{}
+	if statuses == "" { return set }
+	split := strings.FieldsFunc(statuses, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
+	for _, s := range split {
+		s = strings.TrimSpace(s)
+		if s == "" { continue }
+		if n, err := strconv.Atoi(s); err == nil { set[n] = struct{}{} }
+	}
+	return set
+}
+
 func main() {
 	// Pre-parse to allow bare -w (no value) to trigger auto generation (we just drop it)
 	filteredArgs, _ := preparseArgs(os.Args[1:])
@@ -91,6 +104,7 @@ func main() {
 	var outPath string
 	var wordlistPath string
 	var crawlOnly bool
+	var statusExcludeStr string
 
 	flag.StringVar(&base, "u", "", "Base URL, e.g. http://127.0.0.1/")
 	flag.IntVar(&maxDepth, "d", 1, "Recursion depth (0 = just base)")
@@ -98,6 +112,7 @@ func main() {
 	flag.StringVar(&outPath, "o", "", "Output file (optional)")
 	flag.StringVar(&wordlistPath, "w", "", "Wordlist file; omit value (-w) to auto-generate from crawl")
 	flag.BoolVar(&crawlOnly, "crawl-only", false, "Crawl domain and print URLs only")
+	flag.StringVar(&statusExcludeStr, "se", "404", "Status codes to exclude (comma/space-separated)")
 	flag.CommandLine.Parse(filteredArgs)
 
 	if base == "" {
@@ -168,7 +183,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "Scanning with %d words; depth=%d; concurrency=%d\n", len(words), maxDepth, concurrency)
+	excluded := parseExcluded(statusExcludeStr)
+	fmt.Fprintf(os.Stderr, "Scanning with %d words; depth=%d; concurrency=%d; exclude=%s\n", len(words), maxDepth, concurrency, statusExcludeStr)
 
 	client := &http.Client{ Timeout: 10 * time.Second }
 
@@ -195,7 +211,7 @@ func main() {
 		if err != nil { return 0, false }
 		code := resp.StatusCode
 		resp.Body.Close()
-		if code >= 200 && code < 400 {
+		if _, skip := excluded[code]; !skip {
 			atomic.AddInt64(&hits, 1)
 			printLine(fmt.Sprintf("%d %s", code, u))
 			return code, true
