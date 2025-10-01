@@ -302,6 +302,79 @@ func main() {
 		}
 	}
 
+	// Pre-check function to detect reflective endpoints at any level
+	preCheckReflective := func(baseURL, prefix string) bool {
+		if debug {
+			checkPath := path.Join(prefix)
+			if checkPath == "" {
+				checkPath = "root"
+			}
+			log.Printf("DEBUG: Pre-checking path '%s' for reflective endpoint", checkPath)
+		}
+		
+		testWords := []string{"test123xyz", "random456abc", "check789def"}
+		testHashes := make([]string, 0, len(testWords))
+		
+		for _, testWord := range testWords {
+			testURL, err := buildURL(baseURL, prefix, testWord, true)
+			if err != nil {
+				continue
+			}
+			
+			testReq, err := http.NewRequest(http.MethodGet, testURL, nil)
+			if err != nil {
+				continue
+			}
+			
+			testResp, err := client.Do(testReq)
+			if err != nil {
+				continue
+			}
+			
+			if testResp.StatusCode == 200 {
+				lr := io.LimitReader(testResp.Body, 256*1024)
+				h := sha1.New()
+				io.Copy(h, lr)
+				testHash := fmt.Sprintf("%x", h.Sum(nil))
+				testResp.Body.Close()
+				testHashes = append(testHashes, testHash)
+				
+				if debug {
+					log.Printf("DEBUG: Pre-scan %s returned hash %s", testURL, testHash)
+				}
+			} else {
+				testResp.Body.Close()
+			}
+		}
+		
+		// Check if all test words return the same content (reflective endpoint)
+		if len(testHashes) >= 2 {
+			allSame := true
+			firstHash := testHashes[0]
+			for _, h := range testHashes[1:] {
+				if h != firstHash {
+					allSame = false
+					break
+				}
+			}
+			
+			if allSame {
+				pathDesc := prefix
+				if pathDesc == "" {
+					pathDesc = "root"
+				}
+				fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical content (hash: %s)\n", pathDesc, firstHash)
+				
+				if debug {
+					log.Printf("DEBUG: Reflective endpoint detected at path '%s' - blocking recursion", pathDesc)
+				}
+				return true
+			}
+		}
+		
+		return false
+	}
+
 	// Progress bar function
 	updateProgress := func() {
 		completed := atomic.LoadInt64(&completed)
@@ -413,12 +486,21 @@ func main() {
 							log.Printf("DEBUG: URL %s -> code %d, errorCount %d, shouldRecurse %t", u, code, newErrorCount, shouldRecurse)
 						}
 
-						if shouldRecurse {
-							nextPrefix := path.Join(t.prefix, t.word)
+					if shouldRecurse {
+						nextPrefix := path.Join(t.prefix, t.word)
+						
+						// Pre-check at this directory level before recursing
+						if preCheckReflective(t.base, nextPrefix) {
+							// Reflective endpoint detected at this level, skip recursion
+							if debug {
+								log.Printf("DEBUG: Skipping recursion into %s (reflective endpoint)", nextPrefix)
+							}
+						} else {
+							// Not reflective, proceed with recursion
 							add := len(words) * 2
 							pending.Add(add)
 							atomic.AddInt64(&totalTasks, int64(add))
-							if debug && shouldRecurse {
+							if debug {
 								log.Printf("DEBUG: Recursing into %s with %d new tasks", nextPrefix, add)
 							}
 							for _, w := range words {
@@ -427,6 +509,7 @@ func main() {
 							}
 						}
 					}
+					}
 				}
 			}(t)
 		}
@@ -434,72 +517,10 @@ func main() {
 
 	for i := 0; i < concurrency; i++ { wg.Add(1); go worker() }
 
-	// Pre-scan check: test with random words to detect reflective endpoints
-	if debug {
-		log.Printf("DEBUG: Pre-scanning base URL with test words to detect reflective endpoint")
-	}
-	
-	testWords := []string{"test123", "random456", "check789"}
-	testHashes := make([]string, 0, len(testWords))
-	
-	for _, testWord := range testWords {
-		testURL, err := buildURL(base, "", testWord, true)
-		if err != nil {
-			continue
-		}
-		
-		testReq, err := http.NewRequest(http.MethodGet, testURL, nil)
-		if err != nil {
-			continue
-		}
-		
-		testResp, err := client.Do(testReq)
-		if err != nil {
-			continue
-		}
-		
-		if testResp.StatusCode == 200 {
-			lr := io.LimitReader(testResp.Body, 256*1024)
-			h := sha1.New()
-			io.Copy(h, lr)
-			testHash := fmt.Sprintf("%x", h.Sum(nil))
-			testResp.Body.Close()
-			testHashes = append(testHashes, testHash)
-			
-			if debug {
-				log.Printf("DEBUG: Pre-scan %s returned hash %s", testURL, testHash)
-			}
-		} else {
-			testResp.Body.Close()
-		}
-	}
-	
-	// Check if all test words return the same content (reflective endpoint)
-	isReflective := false
-	if len(testHashes) >= 2 {
-		allSame := true
-		firstHash := testHashes[0]
-		for _, h := range testHashes[1:] {
-			if h != firstHash {
-				allSame = false
-				break
-			}
-		}
-		
-		if allSame {
-			isReflective = true
-			fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT DETECTED: All test paths return identical content (hash: %s)\n", firstHash)
-			fmt.Fprintf(os.Stderr, "This endpoint appears to return the same response regardless of the path.\n")
-			fmt.Fprintf(os.Stderr, "Skipping scan to avoid infinite false positives.\n\n")
-			
-			if debug {
-				log.Printf("DEBUG: Reflective endpoint detected - aborting scan")
-			}
-		}
-	}
-	
-	// If reflective endpoint detected, exit early
-	if isReflective {
+	// Pre-check at root level
+	if preCheckReflective(base, "") {
+		fmt.Fprintf(os.Stderr, "This endpoint appears to return the same response regardless of the path.\n")
+		fmt.Fprintf(os.Stderr, "Skipping scan to avoid infinite false positives.\n\n")
 		return
 	}
 
