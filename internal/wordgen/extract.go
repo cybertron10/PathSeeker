@@ -1,6 +1,7 @@
 package wordgen
 
 import (
+	"log"
 	"net/url"
 	"path"
 	"sort"
@@ -45,7 +46,10 @@ func sanitizeToTokens(s string) []string {
 }
 
 // FromURLs extracts unique tokens from URL paths and query keys
-func FromURLs(urls []string) []string {
+func FromURLs(urls []string, debug bool) []string {
+	if debug {
+		log.Printf("DEBUG: Generating wordlist from %d URLs", len(urls))
+	}
 	set := map[string]struct{}{}
 	add := func(w string) { w = strings.ToLower(strings.TrimSpace(w)); if w != "" { set[w] = struct{}{} } }
 
@@ -58,21 +62,33 @@ func FromURLs(urls []string) []string {
 			if seg == "" { continue }
 			add(seg)
 			for _, t := range sanitizeToTokens(seg) { add(t) }
+			if debug && seg != "" {
+				log.Printf("DEBUG: Added path segment: %s", seg)
+			}
 		}
 		for k := range u.Query() {
 			add(k)
 			for _, t := range sanitizeToTokens(k) { add(t) }
+			if debug && k != "" {
+				log.Printf("DEBUG: Added query parameter: %s", k)
+			}
 		}
 		if base := path.Base(u.Path); base != "" && base != "/" {
 			name := strings.TrimSuffix(base, path.Ext(base))
 			if name != "" && name != base {
 				add(name)
 				for _, t := range sanitizeToTokens(name) { add(t) }
+				if debug && name != "" && name != base {
+					log.Printf("DEBUG: Added base name: %s (from %s)", name, base)
+				}
 			}
 		}
 	}
 	list := make([]string, 0, len(set))
 	for w := range set { list = append(list, w) }
 	sort.Strings(list)
+	if debug {
+		log.Printf("DEBUG: Generated %d unique words", len(list))
+	}
 	return list
 }

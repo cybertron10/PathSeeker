@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -11,13 +12,17 @@ import (
 )
 
 // Crawl discovers same-domain URLs up to maxDepth and maxPages
-func Crawl(startURL string, maxDepth int, maxPages int) ([]string, error) {
+func Crawl(startURL string, maxDepth int, maxPages int, debug bool) ([]string, error) {
 	if maxDepth <= 0 { maxDepth = 1 }
 	if maxPages <= 0 { maxPages = 1000 }
 
 	start, err := url.Parse(startURL)
 	if err != nil { return nil, fmt.Errorf("invalid start url: %w", err) }
 	baseHost := start.Host
+
+	if debug {
+		log.Printf("DEBUG: Starting crawl from %s, maxDepth: %d, maxPages: %d", startURL, maxDepth, maxPages)
+	}
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -99,6 +104,10 @@ func Crawl(startURL string, maxDepth int, maxPages int) ([]string, error) {
 				if it.d > maxDepth { return }
 				pageURL := it.u
 
+				if debug {
+					log.Printf("DEBUG: Processing page %s (depth %d)", pageURL, it.d)
+				}
+
 				mu.Lock()
 				if visited[pageURL] { mu.Unlock(); return }
 				visited[pageURL] = true
@@ -110,6 +119,9 @@ func Crawl(startURL string, maxDepth int, maxPages int) ([]string, error) {
 				resp, err := client.Do(req)
 				if err != nil { return }
 				status := resp.StatusCode
+				if debug && status == http.StatusNotFound {
+					log.Printf("DEBUG: Skipping 404 page %s", pageURL)
+				}
 				if status == http.StatusNotFound {
 					resp.Body.Close()
 					return
@@ -122,6 +134,9 @@ func Crawl(startURL string, maxDepth int, maxPages int) ([]string, error) {
 					if er != nil { break }
 					if builder.Len() > 2*1024*1024 { break }
 				}
+				if debug {
+					log.Printf("DEBUG: Loaded %d bytes from %s", builder.Len(), pageURL)
+				}
 				resp.Body.Close()
 
 				page, _ := url.Parse(pageURL)
@@ -133,6 +148,9 @@ func Crawl(startURL string, maxDepth int, maxPages int) ([]string, error) {
 						if len(m) >= 2 { candidate = m[1] } else if len(m) == 1 { candidate = m[0] }
 						abs := resolve(candidate, page)
 						if abs == "" { continue }
+						if debug && abs != "" && !results[abs] {
+							log.Printf("DEBUG: Discovered new URL: %s", abs)
+						}
 						mu.Lock()
 						if !results[abs] && len(results) < maxPages {
 							results[abs] = true
@@ -155,6 +173,10 @@ func Crawl(startURL string, maxDepth int, maxPages int) ([]string, error) {
 	jobs <- item{u: startURL, d: 0}
 	go func() { pending.Wait(); close(jobs) }()
 	wg.Wait()
+
+	if debug {
+		log.Printf("DEBUG: Crawl completed. Found %d URLs", len(results))
+	}
 
 	out := make([]string, 0, len(results))
 	for u := range results { out = append(out, u) }

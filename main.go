@@ -19,6 +19,7 @@ import (
 
 	"github.com/cybertron10/PathSeeker/internal/crawler"
 	"github.com/cybertron10/PathSeeker/internal/wordgen"
+	"log"
 )
 
 // request task represents a single URL attempt and potential recursion
@@ -123,6 +124,7 @@ func main() {
 	var crawlOnly bool
 	var statusExcludeStr string
 	var recursive bool
+	var debug bool
 
 	flag.StringVar(&base, "u", "", "Base URL, e.g. http://127.0.0.1/")
 	flag.IntVar(&maxDepth, "e", 1, "Error tolerance depth: 1=stop on non-200, 2=allow 1 error level, 3=allow 2 error levels")
@@ -132,6 +134,7 @@ func main() {
 	flag.BoolVar(&crawlOnly, "crawl-only", false, "Crawl domain and print URLs only")
 	flag.StringVar(&statusExcludeStr, "se", "404", "Status codes to exclude (comma/space-separated)")
 	flag.BoolVar(&recursive, "r", false, "Enable recursive scanning (continue fuzzing until error tolerance is reached)")
+	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
 	flag.CommandLine.Parse(filteredArgs)
 
 	if base == "" {
@@ -147,7 +150,7 @@ func main() {
 	// Crawl-only mode: just crawl and print URLs, then exit
 	if crawlOnly {
 		fmt.Fprintln(os.Stderr, "Crawling domain (depth 10)...")
-		urls, err := crawler.Crawl(base, 10, 20000)
+		urls, err := crawler.Crawl(base, 10, 20000, debug)
 		if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 		for _, u := range urls { fmt.Println(u) }
 		fmt.Fprintf(os.Stderr, "Crawled %d URLs\n", len(urls))
@@ -179,9 +182,9 @@ func main() {
 		words = w
 	} else {
 		fmt.Fprintln(os.Stderr, "Auto-generating wordlist via crawl (depth 10)...")
-		urls, err := crawler.Crawl(base, 10, 2000)
+		urls, err := crawler.Crawl(base, 10, 2000, debug)
 		if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
-		generated := wordgen.FromURLs(urls)
+		generated := wordgen.FromURLs(urls, debug)
 		fmt.Fprintf(os.Stderr, "Crawl discovered %d URLs; generated %d words\n", len(urls), len(generated))
 		if len(generated) == 0 { fmt.Fprintln(os.Stderr, "auto-generation produced no words"); os.Exit(1) }
 		words = generated
@@ -196,6 +199,11 @@ func main() {
 		scanMode = "recursive"
 	}
 	fmt.Fprintf(os.Stderr, "Scanning with %d words; mode=%s; error-tolerance=%d; concurrency=%d; exclude=%s\n", len(words), scanMode, maxDepth, concurrency, statusExcludeStr)
+
+	if debug {
+		log.Printf("DEBUG: Configuration - base: %s, maxDepth: %d, concurrency: %d, recursive: %t", base, maxDepth, concurrency, recursive)
+		log.Printf("DEBUG: Wordlist: %d words, excluded statuses: %v", len(words), excluded)
+	}
 
 	transport := &http.Transport{
 		MaxIdleConns:        10000,
@@ -219,6 +227,10 @@ func main() {
 	hashBest := make(map[string]string)
 	hashMu := &sync.Mutex{}
 
+	// track content hashes to detect infinite loops (content that repeats at deeper levels)
+	contentAncestors := make(map[string]map[string]bool) // contentHash -> set of parent URLs where this content was seen
+	contentAncestorsMu := &sync.Mutex{}
+
 	// store only 200s for final output (normalized, unique)
 	// final200 := make(map[string]struct{})
 	// finalMu := &sync.Mutex{}
@@ -239,6 +251,9 @@ func main() {
 			sum = fmt.Sprintf("%x", h.Sum(nil))
 		}
 		resp.Body.Close()
+		if debug {
+			log.Printf("DEBUG: Request %s -> %d (hash: %s)", fullURL, code, sum)
+		}
 		if _, skip := excluded[code]; !skip {
 			atomic.AddInt64(&hits, 1)
 			return code, sum, true
@@ -271,6 +286,9 @@ func main() {
 				
 				u, err := buildURL(t.base, t.prefix, t.word, t.withSlash)
 				if err != nil { return }
+				if debug {
+					log.Printf("DEBUG: Built URL %s from task %+v", u, t)
+				}
 				code, sum, ok := requestURL(u)
 				if !ok { return }
 				
@@ -310,15 +328,73 @@ func main() {
 								hashBest[key] = norm
 								best = norm
 							}
+							if debug && exists && len(norm) < len(best) {
+								log.Printf("DEBUG: Found shorter path %s (was %s) for hash %s", norm, best, sum)
+							}
 							shouldRecurse = (best == norm)
+							if debug && code == 200 {
+								if !shouldRecurse {
+									log.Printf("DEBUG: Skipping recursion for %s (duplicate content)", norm)
+								} else {
+									log.Printf("DEBUG: Content %s is unique, proceeding with recursion", norm)
+								}
+							}
 							hashMu.Unlock()
 						}
 						
+						// Check for infinite content loops: if this content was seen in any parent path
+						contentAncestorsMu.Lock()
+						if code == 200 && sum != "" {
+							// Initialize ancestors map for this content hash if needed
+							if contentAncestors[sum] == nil {
+								contentAncestors[sum] = make(map[string]bool)
+							}
+							
+							// Check all parent paths for this content
+							currentPrefix := t.prefix
+							foundInParent := false
+							for currentPrefix != "" {
+								parentPath := path.Join(basePath, currentPrefix)
+								if contentAncestors[sum][parentPath] {
+									if debug {
+										log.Printf("DEBUG: Infinite loop detected - content %s already seen at parent path %s", sum, parentPath)
+									}
+									foundInParent = true
+									break
+								}
+								// Move up to next parent
+								if strings.Contains(currentPrefix, "/") {
+									currentPrefix = path.Dir(currentPrefix)
+								} else {
+									currentPrefix = ""
+								}
+							}
+							
+							if foundInParent {
+								shouldRecurse = false
+							} else {
+								// Record this path as having this content
+								currentPath := path.Join(basePath, t.prefix, t.word)
+								if t.withSlash {
+									currentPath += "/"
+								}
+								contentAncestors[sum][currentPath] = true
+							}
+						}
+						contentAncestorsMu.Unlock()
+
+						if debug {
+							log.Printf("DEBUG: URL %s -> code %d, errorCount %d, shouldRecurse %t", u, code, newErrorCount, shouldRecurse)
+						}
+
 						if shouldRecurse {
 							nextPrefix := path.Join(t.prefix, t.word)
 							add := len(words) * 2
 							pending.Add(add)
 							atomic.AddInt64(&totalTasks, int64(add))
+							if debug && shouldRecurse {
+								log.Printf("DEBUG: Recursing into %s with %d new tasks", nextPrefix, add)
+							}
 							for _, w := range words {
 								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false, errorCount: newErrorCount}
 								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true, errorCount: newErrorCount}
