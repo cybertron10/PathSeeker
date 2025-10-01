@@ -215,13 +215,16 @@ func main() {
 	}
 	client := &http.Client{ Transport: transport, Timeout: 10 * time.Second }
 
-	reqJobs := make(chan reqTask, concurrency*100)
+	// Memory management: limit queue size to prevent exponential growth
+	maxQueueSize := concurrency * 500 // Allow reasonable depth but prevent explosion
+	reqJobs := make(chan reqTask, maxQueueSize)
 	seen := sync.Map{}
 	wg := &sync.WaitGroup{}
 	pending := &sync.WaitGroup{}
 	var hits int64
 	var completed int64
 	var totalTasks int64
+	var droppedTasks int64 // Track tasks dropped due to queue limit
 
 	// dedupe identical content by shortest path; hash -> bestPath (scoped per first-segment branch)
 	hashBest := make(map[string]string)
@@ -504,13 +507,28 @@ func main() {
 					} else {
 						// Not reflective, proceed with recursion
 						add := len(words)
-						pending.Add(add)
-						atomic.AddInt64(&totalTasks, int64(add))
-						if debug {
-							log.Printf("DEBUG: Recursing into %s with %d new tasks", nextPrefix, add)
-						}
-						for _, w := range words {
-							reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false, errorCount: newErrorCount}
+						
+						// Memory management: only add tasks if queue has space
+						queueLen := len(reqJobs)
+						availableSpace := maxQueueSize - queueLen
+						
+						if availableSpace < add {
+							// Queue is near full, skip this recursion level to prevent memory explosion
+							dropped := add
+							atomic.AddInt64(&droppedTasks, int64(dropped))
+							if debug {
+								log.Printf("DEBUG: Skipping recursion into %s - queue near full (%d/%d tasks, would add %d)", nextPrefix, queueLen, maxQueueSize, add)
+							}
+						} else {
+							// Queue has space, add tasks
+							pending.Add(add)
+							atomic.AddInt64(&totalTasks, int64(add))
+							if debug {
+								log.Printf("DEBUG: Recursing into %s with %d new tasks (queue: %d/%d)", nextPrefix, add, queueLen, maxQueueSize)
+							}
+							for _, w := range words {
+								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false, errorCount: newErrorCount}
+							}
 						}
 					}
 					}
@@ -566,4 +584,11 @@ func main() {
 	hashMu.Unlock()
 
 	fmt.Fprintf(os.Stderr, "Scan complete; %d hits\n", atomic.LoadInt64(&hits))
+	
+	// Report dropped tasks if any
+	dropped := atomic.LoadInt64(&droppedTasks)
+	if dropped > 0 {
+		fmt.Fprintf(os.Stderr, "⚠️  Note: %d tasks were dropped due to queue limits (prevents memory explosion)\n", dropped)
+		fmt.Fprintf(os.Stderr, "Tip: Reduce wordlist size or error tolerance (-e) for deeper scans\n")
+	}
 }
