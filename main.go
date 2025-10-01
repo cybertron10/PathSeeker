@@ -363,35 +363,43 @@ func main() {
 			}
 		}
 		
-		// Check if all test words return the same response (status + content)
-		if len(testResults) >= 2 {
-			allSame := true
-			firstResult := testResults[0]
-			
-			for _, result := range testResults[1:] {
-				// Compare both status code and content hash
-				if result.status != firstResult.status || result.hash != firstResult.hash {
-					allSame = false
-					break
-				}
+	// Check if all test words return the same response (status + content)
+	if len(testResults) >= 2 {
+		allSame := true
+		firstResult := testResults[0]
+		
+		// Skip pre-check if all are 404s (expected for non-existent paths)
+		if firstResult.status == 404 {
+			if debug {
+				log.Printf("DEBUG: Pre-check skipped - all test paths return 404 (expected behavior)")
 			}
-			
-			if allSame {
-				pathDesc := prefix
-				if pathDesc == "" {
-					pathDesc = "root"
-				}
-				fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical response (status: %d, hash: %s)\n", pathDesc, firstResult.status, firstResult.hash)
-				
-				if debug {
-					log.Printf("DEBUG: Reflective endpoint detected at path '%s' (status %d) - blocking recursion", pathDesc, firstResult.status)
-				}
-				return true
+			return false
+		}
+		
+		for _, result := range testResults[1:] {
+			// Compare both status code and content hash
+			if result.status != firstResult.status || result.hash != firstResult.hash {
+				allSame = false
+				break
 			}
 		}
 		
-		return false
+		if allSame {
+			pathDesc := prefix
+			if pathDesc == "" {
+				pathDesc = "root"
+			}
+			fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical response (status: %d, hash: %s)\n", pathDesc, firstResult.status, firstResult.hash)
+			
+			if debug {
+				log.Printf("DEBUG: Reflective endpoint detected at path '%s' (status %d) - blocking recursion", pathDesc, firstResult.status)
+			}
+			return true
+		}
 	}
+	
+	return false
+}
 
 	// Progress bar function
 	updateProgress := func() {
