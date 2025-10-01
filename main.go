@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"godir/internal/crawler"
-	"godir/internal/wordgen"
+	"pathseeker/internal/crawler"
+	"pathseeker/internal/wordgen"
 )
 
 // request task represents a single URL attempt and potential recursion

@@ -1,4 +1,4 @@
-# Godir - Advanced Directory Bruteforcer
+# PathSeeker - Advanced Directory Bruteforcer
 
 A high-performance directory bruteforcer written in Go, featuring intelligent error tolerance, content-based deduplication, and automatic wordlist generation through web crawling.
 
@@ -14,26 +14,26 @@ A high-performance directory bruteforcer written in Go, featuring intelligent er
 ## 📋 Installation
 
 ```bash
-git clone https://github.com/cybertron10/scanner.git
-cd scanner
-go build -o godir .
+git clone https://github.com/cybertron10/pathseeker.git
+cd pathseeker
+go build -o pathseeker .
 ```
 
 ## 🎯 Usage
 
 ### Basic Single-Level Scan
 ```bash
-./godir -u https://target.com/ -w wordlist.txt -c 200 -o results.txt
+./pathseeker -u https://target.com/ -w wordlist.txt -c 200 -o results.txt
 ```
 
 ### Recursive Scan with Error Tolerance
 ```bash
-./godir -u https://target.com/ -w wordlist.txt -r -e 2 -c 200 -o results.txt
+./pathseeker -u https://target.com/ -w wordlist.txt -r -e 2 -c 200 -o results.txt
 ```
 
 ### Auto-Generate Wordlist and Scan
 ```bash
-./godir -u https://target.com/ -r -e 2 -c 200 -o results.txt
+./pathseeker -u https://target.com/ -r -e 2 -c 200 -o results.txt
 ```
 
 ## 🏷️ Flags
@@ -79,10 +79,48 @@ When no wordlist is provided, Godir automatically:
 4. Generates a custom wordlist
 5. Saves it as `wordlist.txt`
 
-## 🎨 What Makes Godir Unique
+## 🕷️ Intelligent Crawling
+
+PathSeeker features an advanced web crawler that automatically discovers and analyzes target applications to generate custom wordlists.
+
+### How Crawling Works
+
+1. **Initial Discovery**: Starts from the provided base URL
+2. **Link Extraction**: Analyzes HTML content to find:
+   - Standard links (`<a href="">`)
+   - Form actions (`<form action="">`)
+   - JavaScript URLs and API endpoints
+   - CSS imports and image sources
+   - Meta tags and redirects
+3. **Domain Filtering**: Only follows links within the same domain
+4. **Depth Control**: Configurable crawl depth (default: 10 levels)
+5. **Content Analysis**: Extracts meaningful tokens from discovered URLs
+6. **Wordlist Generation**: Creates custom wordlists from:
+   - Path segments (`/admin/users` → `admin`, `users`)
+   - Query parameters (`?id=123&name=test` → `id`, `name`)
+   - CamelCase tokenization (`userProfile` → `user`, `profile`)
+
+### Crawling Features
+
+- **Concurrent Processing**: 200 workers for fast crawling
+- **Smart Filtering**: Ignores common file extensions and irrelevant content
+- **Memory Efficient**: Streams content to avoid memory issues
+- **Error Resilient**: Continues crawling despite individual page failures
+- **Deduplication**: Removes duplicate URLs automatically
+
+### Example Crawling Output
+
+```
+Auto-generating wordlist via crawl (depth 10)...
+Crawl discovered 45 URLs; generated 127 words
+```
+
+The crawler automatically saves discovered URLs to `wordlist.txt` for future use.
+
+## 🎨 What Makes PathSeeker Unique
 
 ### 1. **Intelligent Error Handling**
-Unlike traditional scanners that stop on 404s, Godir continues through error responses with configurable tolerance. This is crucial for modern web applications where:
+Unlike traditional scanners that stop on 404s, PathSeeker continues through error responses with configurable tolerance. This is crucial for modern web applications where:
 - 500 errors might indicate valid endpoints with server issues
 - 403 responses could be authentication-required endpoints
 - 401 responses might be protected resources worth noting
@@ -93,13 +131,13 @@ Most scanners treat each URL independently, leading to:
 - Wasted time on duplicate pages
 - Cluttered output with meaningless variations
 
-Godir's content hashing prevents this by:
+PathSeeker's content hashing prevents this by:
 - Detecting identical responses across different URLs
 - Keeping only the shortest path to duplicate content
 - Stopping recursion on content matches
 
 ### 3. **Adaptive Wordlist Generation**
-Traditional scanners rely on static wordlists that may not match the target's structure. Godir generates custom wordlists by:
+Traditional scanners rely on static wordlists that may not match the target's structure. PathSeeker generates custom wordlists by:
 - Analyzing the target's actual URL structure
 - Extracting meaningful tokens from discovered endpoints
 - Creating wordlists tailored to the specific application
