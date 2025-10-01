@@ -338,6 +338,9 @@ func main() {
 			words[8*step],        // 88%
 			words[len(words)-1],  // 100%
 		}
+		if debug {
+			log.Printf("DEBUG: Pre-check test words: %v", testWords)
+		}
 	} else if len(words) > 0 {
 		testWords = words
 	} else {
