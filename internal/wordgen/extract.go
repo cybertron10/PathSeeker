@@ -60,6 +60,18 @@ func FromURLs(urls []string, debug bool) []string {
 		for _, seg := range segs {
 			seg = strings.TrimSpace(seg)
 			if seg == "" { continue }
+			
+			// Skip segments that look like files (have extensions)
+			if strings.Contains(seg, ".") {
+				// Extract filename without extension for tokenization
+				name := strings.TrimSuffix(seg, path.Ext(seg))
+				if name != "" && name != seg {
+					// Only add the base name without extension
+					for _, t := range sanitizeToTokens(name) { add(t) }
+				}
+				continue
+			}
+			
 			add(seg)
 			for _, t := range sanitizeToTokens(seg) { add(t) }
 			if debug && seg != "" {
