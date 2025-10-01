@@ -138,6 +138,8 @@ func main() {
 	if !strings.HasSuffix(base, "/") {
 		base += "/"
 	}
+	baseURLParsed, _ := url.Parse(base)
+	basePath := baseURLParsed.Path
 
 	// Crawl-only mode: just crawl and print URLs, then exit
 	if crawlOnly {
@@ -204,7 +206,7 @@ func main() {
 	pending := &sync.WaitGroup{}
 	var hits int64
 
-	// dedupe identical content by shortest path; hash -> bestPath
+	// dedupe identical content by shortest path; hash -> bestPath (scoped per first-segment branch)
 	hashBest := make(map[string]string)
 	hashMu := &sync.Mutex{}
 
@@ -230,17 +232,6 @@ func main() {
 		resp.Body.Close()
 		if _, skip := excluded[code]; !skip {
 			atomic.AddInt64(&hits, 1)
-			// only track 200s for final output; non-200s are ignored in final
-			if code == 200 {
-				// update best path for this content hash
-				hashMu.Lock()
-				best, exists := hashBest[sum]
-				norm := normalizeOutputURL(fullURL)
-				if !exists || len(norm) < len(best) {
-					hashBest[sum] = norm
-				}
-				hashMu.Unlock()
-			}
 			return code, sum, true
 		}
 		return code, sum, false
@@ -255,15 +246,31 @@ func main() {
 				if err != nil { return }
 				code, sum, ok := requestURL(u)
 				if !ok { return }
-				// Recurse on slash-variant for any non-excluded status; apply content-hash pruning only for 200s
+				// Recurse on slash-variant for any non-excluded status; apply content-hash pruning only for 200s within same branch
 				if t.withSlash && t.depth < maxDepth {
 					_, skip := excluded[code]
 					if !skip {
 						shouldRecurse := true
 						if code == 200 {
+							// determine branch key (first segment under base path)
 							norm := normalizeOutputURL(u)
+							pu, perr := url.Parse(norm)
+							branch := ""
+							if perr == nil {
+								rel := strings.TrimPrefix(pu.Path, basePath)
+								rel = strings.TrimPrefix(rel, "/")
+								if rel != "" {
+									parts := strings.SplitN(rel, "/", 2)
+									branch = parts[0]
+								}
+							}
+							key := branch + "|" + sum
 							hashMu.Lock()
-							best := hashBest[sum]
+							best, exists := hashBest[key]
+							if !exists || len(norm) < len(best) {
+								hashBest[key] = norm
+								best = norm
+							}
 							shouldRecurse = (best == norm)
 							hashMu.Unlock()
 						}
@@ -294,7 +301,7 @@ func main() {
 	go func() { pending.Wait(); close(reqJobs) }()
 	wg.Wait()
 
-	// emit only 200s at the end based on content hashes
+	// emit only 200s at the end based on content hashes (union across branches)
 	hashMu.Lock()
 	seenOut := make(map[string]struct{})
 	for _, u := range hashBest {
