@@ -434,29 +434,73 @@ func main() {
 
 	for i := 0; i < concurrency; i++ { wg.Add(1); go worker() }
 
-	// Pre-scan the base URL to detect if it has reflective content
+	// Pre-scan check: test with random words to detect reflective endpoints
 	if debug {
-		log.Printf("DEBUG: Pre-scanning base URL: %s", base)
+		log.Printf("DEBUG: Pre-scanning base URL with test words to detect reflective endpoint")
 	}
-	baseReq, err := http.NewRequest(http.MethodGet, base, nil)
-	if err == nil {
-		baseResp, err := client.Do(baseReq)
-		if err == nil && baseResp.StatusCode == 200 {
-			lr := io.LimitReader(baseResp.Body, 256*1024)
+	
+	testWords := []string{"test123", "random456", "check789"}
+	testHashes := make([]string, 0, len(testWords))
+	
+	for _, testWord := range testWords {
+		testURL, err := buildURL(base, "", testWord, true)
+		if err != nil {
+			continue
+		}
+		
+		testReq, err := http.NewRequest(http.MethodGet, testURL, nil)
+		if err != nil {
+			continue
+		}
+		
+		testResp, err := client.Do(testReq)
+		if err != nil {
+			continue
+		}
+		
+		if testResp.StatusCode == 200 {
+			lr := io.LimitReader(testResp.Body, 256*1024)
 			h := sha1.New()
 			io.Copy(h, lr)
-			baseHash := fmt.Sprintf("%x", h.Sum(nil))
-			baseResp.Body.Close()
+			testHash := fmt.Sprintf("%x", h.Sum(nil))
+			testResp.Body.Close()
+			testHashes = append(testHashes, testHash)
 			
-			// Record the base URL's content
-			baseURL, _ := url.Parse(base)
-			if baseURL != nil {
-				recordPathContent(baseHash, baseURL.Path)
-				if debug {
-					log.Printf("DEBUG: Base URL %s has content hash %s", base, baseHash)
-				}
+			if debug {
+				log.Printf("DEBUG: Pre-scan %s returned hash %s", testURL, testHash)
+			}
+		} else {
+			testResp.Body.Close()
+		}
+	}
+	
+	// Check if all test words return the same content (reflective endpoint)
+	isReflective := false
+	if len(testHashes) >= 2 {
+		allSame := true
+		firstHash := testHashes[0]
+		for _, h := range testHashes[1:] {
+			if h != firstHash {
+				allSame = false
+				break
 			}
 		}
+		
+		if allSame {
+			isReflective = true
+			fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT DETECTED: All test paths return identical content (hash: %s)\n", firstHash)
+			fmt.Fprintf(os.Stderr, "This endpoint appears to return the same response regardless of the path.\n")
+			fmt.Fprintf(os.Stderr, "Skipping scan to avoid infinite false positives.\n\n")
+			
+			if debug {
+				log.Printf("DEBUG: Reflective endpoint detected - aborting scan")
+			}
+		}
+	}
+	
+	// If reflective endpoint detected, exit early
+	if isReflective {
+		return
 	}
 
 	// seed: all words at root, both variants
