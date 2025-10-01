@@ -330,10 +330,9 @@ func main() {
 	for _, u := range hashBest {
 		if _, ok := seenOut[u]; ok { continue }
 		seenOut[u] = struct{}{}
-		writer.WriteString("200 ")
 		writer.WriteString(u)
 		writer.WriteString("\n")
-		if fileWriter != nil { fileWriter.WriteString("200 "); fileWriter.WriteString(u); fileWriter.WriteString("\n") }
+		if fileWriter != nil { fileWriter.WriteString(u); fileWriter.WriteString("\n") }
 	}
 	hashMu.Unlock()
 
