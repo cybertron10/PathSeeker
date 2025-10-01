@@ -321,63 +321,45 @@ func main() {
 			log.Printf("DEBUG: Pre-checking path '%s' for reflective endpoint", checkPath)
 		}
 		
-		testWords := []string{"test123xyz", "random456abc", "check789def"}
-		testHashes := make([]string, 0, len(testWords))
+	testWords := []string{"test123xyz", "random456abc", "check789def"}
+	testHashes := make([]string, 0, len(testWords))
+	
+	for _, testWord := range testWords {
+		testURL, err := buildURL(baseURL, prefix, testWord, true)
+		if err != nil {
+			continue
+		}
 		
-		for _, testWord := range testWords {
-			testURL, err := buildURL(baseURL, prefix, testWord, true)
-			if err != nil {
-				continue
-			}
-			
-			testReq, err := http.NewRequest(http.MethodGet, testURL, nil)
-			if err != nil {
-				continue
-			}
-			
+		testReq, err := http.NewRequest(http.MethodGet, testURL, nil)
+		if err != nil {
+			continue
+		}
+		
 		testResp, err := client.Do(testReq)
 		if err != nil {
 			continue
 		}
 		
-		status := testResp.StatusCode
-		
-		// Hash content for ALL non-404 responses
-		if status != 404 {
+		if testResp.StatusCode == 200 {
 			lr := io.LimitReader(testResp.Body, 256*1024)
 			h := sha1.New()
 			io.Copy(h, lr)
 			testHash := fmt.Sprintf("%x", h.Sum(nil))
 			testResp.Body.Close()
-			
-			// Store status code with hash to compare both
-			combinedHash := fmt.Sprintf("%d:%s", status, testHash)
-			testHashes = append(testHashes, combinedHash)
+			testHashes = append(testHashes, testHash)
 			
 			if debug {
-				log.Printf("DEBUG: Pre-scan %s returned status %d, hash %s", testURL, status, testHash)
+				log.Printf("DEBUG: Pre-scan %s returned hash %s", testURL, testHash)
 			}
 		} else {
 			testResp.Body.Close()
-			if debug {
-				log.Printf("DEBUG: Pre-scan %s returned status %d (404 - skipped)", testURL, status)
-			}
 		}
-		}
-		
+	}
+	
 	// Check if all test words return the same content (reflective endpoint)
 	if len(testHashes) >= 2 {
 		allSame := true
 		firstHash := testHashes[0]
-		
-		// Skip if all test paths returned 404 (expected for non-existent paths)
-		if firstHash == "404:" {
-			if debug {
-				log.Printf("DEBUG: Pre-check skipped - all test paths return 404 (expected behavior)")
-			}
-			return false
-		}
-		
 		for _, h := range testHashes[1:] {
 			if h != firstHash {
 				allSame = false
@@ -390,17 +372,10 @@ func main() {
 			if pathDesc == "" {
 				pathDesc = "root"
 			}
-			// Extract status and hash from combined string
-			parts := strings.SplitN(firstHash, ":", 2)
-			statusStr := parts[0]
-			hashStr := ""
-			if len(parts) > 1 {
-				hashStr = parts[1]
-			}
-			fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical response (status: %s, hash: %s)\n", pathDesc, statusStr, hashStr)
+			fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical content (hash: %s)\n", pathDesc, firstHash)
 			
 			if debug {
-				log.Printf("DEBUG: Reflective endpoint detected at path '%s' (status %s) - blocking recursion", pathDesc, statusStr)
+				log.Printf("DEBUG: Reflective endpoint detected at path '%s' - blocking recursion", pathDesc)
 			}
 			return true
 		}
