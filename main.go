@@ -434,6 +434,31 @@ func main() {
 
 	for i := 0; i < concurrency; i++ { wg.Add(1); go worker() }
 
+	// Pre-scan the base URL to detect if it has reflective content
+	if debug {
+		log.Printf("DEBUG: Pre-scanning base URL: %s", base)
+	}
+	baseReq, err := http.NewRequest(http.MethodGet, base, nil)
+	if err == nil {
+		baseResp, err := client.Do(baseReq)
+		if err == nil && baseResp.StatusCode == 200 {
+			lr := io.LimitReader(baseResp.Body, 256*1024)
+			h := sha1.New()
+			io.Copy(h, lr)
+			baseHash := fmt.Sprintf("%x", h.Sum(nil))
+			baseResp.Body.Close()
+			
+			// Record the base URL's content
+			baseURL, _ := url.Parse(base)
+			if baseURL != nil {
+				recordPathContent(baseHash, baseURL.Path)
+				if debug {
+					log.Printf("DEBUG: Base URL %s has content hash %s", base, baseHash)
+				}
+			}
+		}
+	}
+
 	// seed: all words at root, both variants
 	seedTasks := len(words) * 2
 	pending.Add(seedTasks)
