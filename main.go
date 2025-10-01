@@ -574,14 +574,20 @@ func main() {
 	// emit only 200s at the end based on content hashes (union across branches)
 	hashMu.Lock()
 	seenOut := make(map[string]struct{})
+	outputCount := 0
 	for _, u := range hashBest {
 		if _, ok := seenOut[u]; ok { continue }
 		seenOut[u] = struct{}{}
 		writer.WriteString(u)
 		writer.WriteString("\n")
 		if fileWriter != nil { fileWriter.WriteString(u); fileWriter.WriteString("\n") }
+		outputCount++
 	}
 	hashMu.Unlock()
+	
+	if debug {
+		log.Printf("DEBUG: Output %d unique URLs from %d hashBest entries", outputCount, len(hashBest))
+	}
 
 	fmt.Fprintf(os.Stderr, "Scan complete; %d hits\n", atomic.LoadInt64(&hits))
 	
