@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,20 +19,25 @@ import (
 	"godir/internal/wordgen"
 )
 
-// task represents a URL to request with its current recursion depth
-type task struct {
-	base   string
-	depth  int
-	prefix string
+// directory task is no longer used for per-request model
+// request task represents a single URL attempt and potential recursion
+ type reqTask struct {
+	base     string
+	prefix   string
+	word     string
+	depth    int
+	withSlash bool
 }
 
-func joinURL(base, prefix, word string) (string, error) {
+func buildURL(base, prefix, word string, withSlash bool) (string, error) {
 	u, err := url.Parse(base)
 	if err != nil { return "", err }
 	p := strings.TrimSuffix(u.Path, "/")
 	joined := path.Join(p+"/", prefix, word)
-	if !strings.HasSuffix(joined, "/") {
-		joined += "/"
+	if withSlash {
+		if !strings.HasSuffix(joined, "/") { joined += "/" }
+	} else {
+		joined = strings.TrimSuffix(joined, "/")
 	}
 	u.Path = joined
 	return u.String(), nil
@@ -131,9 +137,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		for _, u := range urls {
-			fmt.Println(u)
-		}
+		for _, u := range urls { fmt.Println(u) }
 		fmt.Fprintf(os.Stderr, "Crawled %d URLs\n", len(urls))
 		return
 	}
@@ -164,31 +168,30 @@ func main() {
 	} else {
 		fmt.Fprintln(os.Stderr, "Auto-generating wordlist via crawl (depth 10)...")
 		urls, err := crawler.Crawl(base, 10, 2000)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
+		if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 		generated := wordgen.FromURLs(urls)
 		fmt.Fprintf(os.Stderr, "Crawl discovered %d URLs; generated %d words\n", len(urls), len(generated))
-		if len(generated) == 0 {
-			fmt.Fprintln(os.Stderr, "auto-generation produced no words")
-			os.Exit(1)
-		}
+		if len(generated) == 0 { fmt.Fprintln(os.Stderr, "auto-generation produced no words"); os.Exit(1) }
 		words = generated
 		_ = saveWordsToFile(generated, "wordlist.txt")
 	}
 
-	if len(words) == 0 {
-		fmt.Fprintln(os.Stderr, "no words provided")
-		os.Exit(1)
-	}
+	if len(words) == 0 { fmt.Fprintln(os.Stderr, "no words provided"); os.Exit(1) }
 
 	excluded := parseExcluded(statusExcludeStr)
 	fmt.Fprintf(os.Stderr, "Scanning with %d words; depth=%d; concurrency=%d; exclude=%s\n", len(words), maxDepth, concurrency, statusExcludeStr)
 
-	client := &http.Client{ Timeout: 10 * time.Second }
+	transport := &http.Transport{
+		MaxIdleConns:        10000,
+		MaxIdleConnsPerHost: concurrency * 2,
+		MaxConnsPerHost:     concurrency * 4,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 5 * time.Second,
+		DialContext:         (&net.Dialer{ Timeout: 30 * time.Second }).DialContext,
+	}
+	client := &http.Client{ Transport: transport, Timeout: 10 * time.Second }
 
-	jobs := make(chan task, concurrency*4)
+	reqJobs := make(chan reqTask, concurrency*100)
 	seen := sync.Map{}
 	wg := &sync.WaitGroup{}
 	pending := &sync.WaitGroup{}
@@ -197,16 +200,14 @@ func main() {
 	printLine := func(s string) {
 		writer.WriteString(s)
 		writer.WriteString("\n")
-		if fileWriter != nil {
-			fileWriter.WriteString(s)
-			fileWriter.WriteString("\n")
-		}
+		if fileWriter != nil { fileWriter.WriteString(s); fileWriter.WriteString("\n") }
 	}
 
 	requestURL := func(u string) (int, bool) {
 		if _, loaded := seen.LoadOrStore(u, struct{}{}); loaded { return 0, false }
 		req, err := http.NewRequest(http.MethodGet, u, nil)
 		if err != nil { return 0, false }
+		req.Header.Set("Connection", "keep-alive")
 		resp, err := client.Do(req)
 		if err != nil { return 0, false }
 		code := resp.StatusCode
@@ -221,39 +222,37 @@ func main() {
 
 	worker := func() {
 		defer wg.Done()
-		for j := range jobs {
-			func(j task) {
+		for t := range reqJobs {
+			func(t reqTask) {
 				defer pending.Done()
-				for _, w := range words {
-					uWithSlash, err := joinURL(j.base, j.prefix, w)
-					if err != nil { continue }
-					uNoSlash := strings.TrimSuffix(uWithSlash, "/")
-					hit := false
-					if uNoSlash != "" {
-						if _, ok := requestURL(uNoSlash); ok { hit = true }
-					}
-					if _, ok := requestURL(uWithSlash); ok { hit = true }
-					if hit && j.depth < maxDepth {
-						pending.Add(1)
-						jobs <- task{base: j.base, depth: j.depth + 1, prefix: path.Join(j.prefix, w)}
+				u, err := buildURL(t.base, t.prefix, t.word, t.withSlash)
+				if err != nil { return }
+				_, ok := requestURL(u)
+				// Only recurse on slash hits (directory semantics)
+				if ok && t.withSlash && t.depth < maxDepth {
+					nextPrefix := path.Join(t.prefix, t.word)
+					// enqueue children for all words (both variants)
+					add := len(words) * 2
+					pending.Add(add)
+					for _, w := range words {
+						reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false}
+						reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true}
 					}
 				}
-			}(j)
+			}(t)
 		}
 	}
 
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go worker()
+	for i := 0; i < concurrency; i++ { wg.Add(1); go worker() }
+
+	// seed: all words at root, both variants
+	pending.Add(len(words) * 2)
+	for _, w := range words {
+		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: false}
+		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: true}
 	}
 
-	// seed with base and empty prefix at depth 0
-	pending.Add(1)
-	jobs <- task{base: base, depth: 0, prefix: ""}
-
-	// closer waits for all pending tasks to finish, then closes jobs so workers exit
-	go func() { pending.Wait(); close(jobs) }()
-
+	go func() { pending.Wait(); close(reqJobs) }()
 	wg.Wait()
 	fmt.Fprintf(os.Stderr, "Scan complete; %d hits\n", atomic.LoadInt64(&hits))
 }
