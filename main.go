@@ -495,19 +495,18 @@ func main() {
 							if debug {
 								log.Printf("DEBUG: Skipping recursion into %s (reflective endpoint)", nextPrefix)
 							}
-						} else {
-							// Not reflective, proceed with recursion
-							add := len(words) * 2
-							pending.Add(add)
-							atomic.AddInt64(&totalTasks, int64(add))
-							if debug {
-								log.Printf("DEBUG: Recursing into %s with %d new tasks", nextPrefix, add)
-							}
-							for _, w := range words {
-								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false, errorCount: newErrorCount}
-								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true, errorCount: newErrorCount}
-							}
+					} else {
+						// Not reflective, proceed with recursion
+						add := len(words)
+						pending.Add(add)
+						atomic.AddInt64(&totalTasks, int64(add))
+						if debug {
+							log.Printf("DEBUG: Recursing into %s with %d new tasks", nextPrefix, add)
 						}
+						for _, w := range words {
+							reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false, errorCount: newErrorCount}
+						}
+					}
 					}
 					}
 				}
@@ -524,13 +523,12 @@ func main() {
 		return
 	}
 
-	// seed: all words at root, both variants
-	seedTasks := len(words) * 2
+	// seed: all words at root, without trailing slash only
+	seedTasks := len(words)
 	pending.Add(seedTasks)
 	atomic.StoreInt64(&totalTasks, int64(seedTasks))
 	for _, w := range words {
 		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: false, errorCount: 0}
-		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: true, errorCount: 0}
 	}
 
 	// Start progress updater
