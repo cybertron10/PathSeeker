@@ -51,7 +51,16 @@ func FromURLs(urls []string, debug bool) []string {
 		log.Printf("DEBUG: Generating wordlist from %d URLs", len(urls))
 	}
 	set := map[string]struct{}{}
-	add := func(w string) { w = strings.ToLower(strings.TrimSpace(w)); if w != "" { set[w] = struct{}{} } }
+	add := func(w string) {
+		w = strings.ToLower(strings.TrimSpace(w))
+		// Filter out invalid words
+		if w == "" { return }
+		if len(w) < 2 { return } // Skip single characters
+		if strings.Contains(w, ".") { return } // Skip words with dots
+		if strings.HasPrefix(w, "/") { return } // Skip URL-like strings
+		if !isLower(rune(w[0])) && !isDigit(rune(w[0])) { return } // Must start with letter or digit
+		set[w] = struct{}{}
+	}
 
 	for _, s := range urls {
 		u, err := url.Parse(s)
