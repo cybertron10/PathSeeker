@@ -206,6 +206,8 @@ func main() {
 	wg := &sync.WaitGroup{}
 	pending := &sync.WaitGroup{}
 	var hits int64
+	var completed int64
+	var totalTasks int64
 
 	// dedupe identical content by shortest path; hash -> bestPath (scoped per first-segment branch)
 	hashBest := make(map[string]string)
@@ -238,20 +240,34 @@ func main() {
 		return code, sum, false
 	}
 
+	// Progress bar function
+	updateProgress := func() {
+		completed := atomic.LoadInt64(&completed)
+		total := atomic.LoadInt64(&totalTasks)
+		hits := atomic.LoadInt64(&hits)
+		
+		if total > 0 {
+			percent := float64(completed) / float64(total) * 100
+			barWidth := 50
+			filled := int(percent / 100 * float64(barWidth))
+			
+			bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+			fmt.Fprintf(os.Stderr, "\rProgress: [%s] %.1f%% (%d/%d) | Hits: %d", bar, percent, completed, total, hits)
+		}
+	}
+
 	worker := func() {
 		defer wg.Done()
 		for t := range reqJobs {
 			func(t reqTask) {
 				defer pending.Done()
+				defer atomic.AddInt64(&completed, 1)
+				
 				u, err := buildURL(t.base, t.prefix, t.word, t.withSlash)
 				if err != nil { return }
 				code, sum, ok := requestURL(u)
 				if !ok { return }
 				
-				// Debug output
-				if code != 404 {
-					fmt.Fprintf(os.Stderr, "DEBUG: %d %s (depth=%d, errors=%d)\n", code, u, t.depth, t.errorCount)
-				}
 				// Error tolerance depth logic: -d 1=stop on non-200, -d 2=allow 1 error level, -d 3=allow 2 error levels
 				if t.withSlash {
 					_, skip := excluded[code]
@@ -296,13 +312,11 @@ func main() {
 							nextPrefix := path.Join(t.prefix, t.word)
 							add := len(words) * 2
 							pending.Add(add)
-							fmt.Fprintf(os.Stderr, "DEBUG: Recursing from %s (errors=%d->%d, adding %d tasks)\n", u, t.errorCount, newErrorCount, add)
+							atomic.AddInt64(&totalTasks, int64(add))
 							for _, w := range words {
 								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false, errorCount: newErrorCount}
 								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true, errorCount: newErrorCount}
 							}
-						} else {
-							fmt.Fprintf(os.Stderr, "DEBUG: Stopping recursion at %s (errors=%d, max=%d)\n", u, newErrorCount, maxDepth)
 						}
 					}
 				}
@@ -315,14 +329,27 @@ func main() {
 	// seed: all words at root, both variants
 	seedTasks := len(words) * 2
 	pending.Add(seedTasks)
-	fmt.Fprintf(os.Stderr, "DEBUG: Seeding %d initial tasks\n", seedTasks)
+	atomic.StoreInt64(&totalTasks, int64(seedTasks))
 	for _, w := range words {
 		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: false, errorCount: 0}
 		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: true, errorCount: 0}
 	}
 
+	// Start progress updater
+	progressTicker := time.NewTicker(100 * time.Millisecond)
+	defer progressTicker.Stop()
+	go func() {
+		for range progressTicker.C {
+			updateProgress()
+		}
+	}()
+
 	go func() { pending.Wait(); close(reqJobs) }()
 	wg.Wait()
+	
+	// Final progress update
+	updateProgress()
+	fmt.Fprintln(os.Stderr) // New line after progress bar
 
 	// emit only 200s at the end based on content hashes (union across branches)
 	hashMu.Lock()
