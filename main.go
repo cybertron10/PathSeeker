@@ -335,51 +335,76 @@ func main() {
 				continue
 			}
 			
-			testResp, err := client.Do(testReq)
-			if err != nil {
-				continue
-			}
+		testResp, err := client.Do(testReq)
+		if err != nil {
+			continue
+		}
+		
+		status := testResp.StatusCode
+		
+		// Hash content for ALL non-404 responses
+		if status != 404 {
+			lr := io.LimitReader(testResp.Body, 256*1024)
+			h := sha1.New()
+			io.Copy(h, lr)
+			testHash := fmt.Sprintf("%x", h.Sum(nil))
+			testResp.Body.Close()
 			
-			if testResp.StatusCode == 200 {
-				lr := io.LimitReader(testResp.Body, 256*1024)
-				h := sha1.New()
-				io.Copy(h, lr)
-				testHash := fmt.Sprintf("%x", h.Sum(nil))
-				testResp.Body.Close()
-				testHashes = append(testHashes, testHash)
-				
-				if debug {
-					log.Printf("DEBUG: Pre-scan %s returned hash %s", testURL, testHash)
-				}
-			} else {
-				testResp.Body.Close()
+			// Store status code with hash to compare both
+			combinedHash := fmt.Sprintf("%d:%s", status, testHash)
+			testHashes = append(testHashes, combinedHash)
+			
+			if debug {
+				log.Printf("DEBUG: Pre-scan %s returned status %d, hash %s", testURL, status, testHash)
+			}
+		} else {
+			testResp.Body.Close()
+			if debug {
+				log.Printf("DEBUG: Pre-scan %s returned status %d (404 - skipped)", testURL, status)
+			}
+		}
+		}
+		
+	// Check if all test words return the same content (reflective endpoint)
+	if len(testHashes) >= 2 {
+		allSame := true
+		firstHash := testHashes[0]
+		
+		// Skip if all test paths returned 404 (expected for non-existent paths)
+		if firstHash == "404:" {
+			if debug {
+				log.Printf("DEBUG: Pre-check skipped - all test paths return 404 (expected behavior)")
+			}
+			return false
+		}
+		
+		for _, h := range testHashes[1:] {
+			if h != firstHash {
+				allSame = false
+				break
 			}
 		}
 		
-		// Check if all test words return the same content (reflective endpoint)
-		if len(testHashes) >= 2 {
-			allSame := true
-			firstHash := testHashes[0]
-			for _, h := range testHashes[1:] {
-				if h != firstHash {
-					allSame = false
-					break
-				}
+		if allSame {
+			pathDesc := prefix
+			if pathDesc == "" {
+				pathDesc = "root"
 			}
+			// Extract status and hash from combined string
+			parts := strings.SplitN(firstHash, ":", 2)
+			statusStr := parts[0]
+			hashStr := ""
+			if len(parts) > 1 {
+				hashStr = parts[1]
+			}
+			fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical response (status: %s, hash: %s)\n", pathDesc, statusStr, hashStr)
 			
-			if allSame {
-				pathDesc := prefix
-				if pathDesc == "" {
-					pathDesc = "root"
-				}
-				fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical content (hash: %s)\n", pathDesc, firstHash)
-				
-				if debug {
-					log.Printf("DEBUG: Reflective endpoint detected at path '%s' - blocking recursion", pathDesc)
-				}
-				return true
+			if debug {
+				log.Printf("DEBUG: Reflective endpoint detected at path '%s' (status %s) - blocking recursion", pathDesc, statusStr)
 			}
+			return true
 		}
+	}
 		
 		return false
 	}
