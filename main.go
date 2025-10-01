@@ -187,27 +187,39 @@ func main() {
 		}
 	}
 
+	requestURL := func(u string) (int, bool) {
+		if _, loaded := seen.LoadOrStore(u, struct{}{}); loaded { return 0, false }
+		req, err := http.NewRequest(http.MethodGet, u, nil)
+		if err != nil { return 0, false }
+		resp, err := client.Do(req)
+		if err != nil { return 0, false }
+		code := resp.StatusCode
+		resp.Body.Close()
+		if code >= 200 && code < 400 {
+			atomic.AddInt64(&hits, 1)
+			printLine(fmt.Sprintf("%d %s", code, u))
+			return code, true
+		}
+		return code, false
+	}
+
 	worker := func() {
 		defer wg.Done()
 		for j := range jobs {
 			func(j task) {
 				defer pending.Done()
 				for _, w := range words {
-					u, err := joinURL(j.base, j.prefix, w)
+					uWithSlash, err := joinURL(j.base, j.prefix, w)
 					if err != nil { continue }
-					if _, loaded := seen.LoadOrStore(u, struct{}{}); loaded { continue }
-					req, err := http.NewRequest(http.MethodGet, u, nil)
-					if err != nil { continue }
-					resp, err := client.Do(req)
-					if err != nil { continue }
-					resp.Body.Close()
-					if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-						atomic.AddInt64(&hits, 1)
-						printLine(fmt.Sprintf("%d %s", resp.StatusCode, u))
-						if j.depth < maxDepth {
-							pending.Add(1)
-							jobs <- task{base: j.base, depth: j.depth + 1, prefix: path.Join(j.prefix, w)}
-						}
+					uNoSlash := strings.TrimSuffix(uWithSlash, "/")
+					hit := false
+					if uNoSlash != "" {
+						if _, ok := requestURL(uNoSlash); ok { hit = true }
+					}
+					if _, ok := requestURL(uWithSlash); ok { hit = true }
+					if hit && j.depth < maxDepth {
+						pending.Add(1)
+						jobs <- task{base: j.base, depth: j.depth + 1, prefix: path.Join(j.prefix, w)}
 					}
 				}
 			}(j)
