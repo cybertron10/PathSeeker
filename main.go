@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha1"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,7 +21,6 @@ import (
 	"godir/internal/wordgen"
 )
 
-// directory task is no longer used for per-request model
 // request task represents a single URL attempt and potential recursion
  type reqTask struct {
 	base     string
@@ -99,6 +100,15 @@ func parseExcluded(statuses string) map[int]struct{} {
 	return set
 }
 
+func normalizeOutputURL(u string) string {
+	if strings.HasSuffix(u, "/") {
+		if !strings.HasSuffix(u, "://") {
+			return strings.TrimRight(u, "/")
+		}
+	}
+	return u
+}
+
 func main() {
 	// Pre-parse to allow bare -w (no value) to trigger auto generation (we just drop it)
 	filteredArgs, _ := preparseArgs(os.Args[1:])
@@ -133,10 +143,7 @@ func main() {
 	if crawlOnly {
 		fmt.Fprintln(os.Stderr, "Crawling domain (depth 10)...")
 		urls, err := crawler.Crawl(base, 10, 20000)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
+		if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 		for _, u := range urls { fmt.Println(u) }
 		fmt.Fprintf(os.Stderr, "Crawled %d URLs\n", len(urls))
 		return
@@ -197,27 +204,40 @@ func main() {
 	pending := &sync.WaitGroup{}
 	var hits int64
 
-	printLine := func(s string) {
-		writer.WriteString(s)
-		writer.WriteString("\n")
-		if fileWriter != nil { fileWriter.WriteString(s); fileWriter.WriteString("\n") }
-	}
+	// dedupe identical content by shortest path; hash -> bestPath
+	hashBest := make(map[string]string)
+	hashMu := &sync.Mutex{}
 
-	requestURL := func(u string) (int, bool) {
-		if _, loaded := seen.LoadOrStore(u, struct{}{}); loaded { return 0, false }
-		req, err := http.NewRequest(http.MethodGet, u, nil)
-		if err != nil { return 0, false }
+	// store only 200s for final output (normalized, unique)
+	final200 := make(map[string]struct{})
+	finalMu := &sync.Mutex{}
+
+	requestURL := func(fullURL string) (int, string, bool) {
+		if _, loaded := seen.LoadOrStore(fullURL, struct{}{}); loaded { return 0, "", false }
+		req, err := http.NewRequest(http.MethodGet, fullURL, nil)
+		if err != nil { return 0, "", false }
 		req.Header.Set("Connection", "keep-alive")
 		resp, err := client.Do(req)
-		if err != nil { return 0, false }
+		if err != nil { return 0, "", false }
 		code := resp.StatusCode
+		var sum string
+		if code == 200 {
+			lr := io.LimitReader(resp.Body, 256*1024)
+			h := sha1.New()
+			io.Copy(h, lr)
+			sum = fmt.Sprintf("%x", h.Sum(nil))
+		}
 		resp.Body.Close()
 		if _, skip := excluded[code]; !skip {
 			atomic.AddInt64(&hits, 1)
-			printLine(fmt.Sprintf("%d %s", code, u))
-			return code, true
+			if code == 200 {
+				finalMu.Lock()
+				final200[normalizeOutputURL(fullURL)] = struct{}{}
+				finalMu.Unlock()
+			}
+			return code, sum, true
 		}
-		return code, false
+		return code, sum, false
 	}
 
 	worker := func() {
@@ -227,16 +247,25 @@ func main() {
 				defer pending.Done()
 				u, err := buildURL(t.base, t.prefix, t.word, t.withSlash)
 				if err != nil { return }
-				_, ok := requestURL(u)
-				// Only recurse on slash hits (directory semantics)
-				if ok && t.withSlash && t.depth < maxDepth {
-					nextPrefix := path.Join(t.prefix, t.word)
-					// enqueue children for all words (both variants)
-					add := len(words) * 2
-					pending.Add(add)
-					for _, w := range words {
-						reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false}
-						reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true}
+				code, hash, ok := requestURL(u)
+				if !ok { return }
+				// prune recursion if same-content already seen at a shorter or equal path
+				if t.withSlash && code == 200 && t.depth < maxDepth {
+					hashMu.Lock()
+					best, exists := hashBest[hash]
+					if !exists || len(u) < len(best) {
+						hashBest[hash] = u
+					}
+					shouldRecurse := !exists || len(u) <= len(best)
+					hashMu.Unlock()
+					if shouldRecurse {
+						nextPrefix := path.Join(t.prefix, t.word)
+						add := len(words) * 2
+						pending.Add(add)
+						for _, w := range words {
+							reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false}
+							reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true}
+						}
 					}
 				}
 			}(t)
@@ -254,5 +283,16 @@ func main() {
 
 	go func() { pending.Wait(); close(reqJobs) }()
 	wg.Wait()
+
+	// emit only 200s at the end
+	finalMu.Lock()
+	for u := range final200 {
+		writer.WriteString("200 ")
+		writer.WriteString(u)
+		writer.WriteString("\n")
+		if fileWriter != nil { fileWriter.WriteString("200 "); fileWriter.WriteString(u); fileWriter.WriteString("\n") }
+	}
+	finalMu.Unlock()
+
 	fmt.Fprintf(os.Stderr, "Scan complete; %d hits\n", atomic.LoadInt64(&hits))
 }
