@@ -94,53 +94,55 @@ func Crawl(startURL string, maxDepth int, maxPages int) ([]string, error) {
 	worker := func() {
 		defer wg.Done()
 		for it := range jobs {
-			pending.Done()
-			if it.d > maxDepth { continue }
-			pageURL := it.u
+			func(it item) {
+				defer pending.Done()
+				if it.d > maxDepth { return }
+				pageURL := it.u
 
-			mu.Lock()
-			if visited[pageURL] { mu.Unlock(); continue }
-			visited[pageURL] = true
-			results[pageURL] = true
-			mu.Unlock()
+				mu.Lock()
+				if visited[pageURL] { mu.Unlock(); return }
+				visited[pageURL] = true
+				results[pageURL] = true
+				mu.Unlock()
 
-			req, err := http.NewRequest(http.MethodGet, pageURL, nil)
-			if err != nil { continue }
-			resp, err := client.Do(req)
-			if err != nil { continue }
-			status := resp.StatusCode
-			if status == http.StatusNotFound {
-				resp.Body.Close()
-				continue
-			}
-			builder := new(strings.Builder)
-			buf := make([]byte, 16384)
-			for {
-				n, er := resp.Body.Read(buf)
-				if n > 0 { builder.Write(buf[:n]) }
-				if er != nil { break }
-				if builder.Len() > 2*1024*1024 { break }
-			}
-			resp.Body.Close()
-
-			page, _ := url.Parse(pageURL)
-			body := builder.String()
-			for _, re := range regexes {
-				matches := re.FindAllStringSubmatch(body, -1)
-				for _, m := range matches {
-					candidate := ""
-					if len(m) >= 2 { candidate = m[1] } else if len(m) == 1 { candidate = m[0] }
-					abs := resolve(candidate, page)
-					if abs == "" { continue }
-					mu.Lock()
-					if !results[abs] && len(results) < maxPages {
-						results[abs] = true
-						pending.Add(1)
-						jobs <- item{u: abs, d: it.d + 1}
-					}
-					mu.Unlock()
+				req, err := http.NewRequest(http.MethodGet, pageURL, nil)
+				if err != nil { return }
+				resp, err := client.Do(req)
+				if err != nil { return }
+				status := resp.StatusCode
+				if status == http.StatusNotFound {
+					resp.Body.Close()
+					return
 				}
-			}
+				builder := new(strings.Builder)
+				buf := make([]byte, 16384)
+				for {
+					n, er := resp.Body.Read(buf)
+					if n > 0 { builder.Write(buf[:n]) }
+					if er != nil { break }
+					if builder.Len() > 2*1024*1024 { break }
+				}
+				resp.Body.Close()
+
+				page, _ := url.Parse(pageURL)
+				body := builder.String()
+				for _, re := range regexes {
+					matches := re.FindAllStringSubmatch(body, -1)
+					for _, m := range matches {
+						candidate := ""
+						if len(m) >= 2 { candidate = m[1] } else if len(m) == 1 { candidate = m[0] }
+						abs := resolve(candidate, page)
+						if abs == "" { continue }
+						mu.Lock()
+						if !results[abs] && len(results) < maxPages {
+							results[abs] = true
+							pending.Add(1)
+							jobs <- item{u: abs, d: it.d + 1}
+						}
+						mu.Unlock()
+					}
+				}
+			}(it)
 		}
 	}
 
