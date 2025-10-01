@@ -322,14 +322,10 @@ func main() {
 		}
 		
 		testWords := []string{"test123xyz", "random456abc", "check789def"}
-		type testResult struct {
-			hash   string
-			status int
-		}
-		testResults := make([]testResult, 0, len(testWords))
+		testHashes := make([]string, 0, len(testWords))
 		
 		for _, testWord := range testWords {
-			testURL, err := buildURL(baseURL, prefix, testWord, false)
+			testURL, err := buildURL(baseURL, prefix, testWord, true)
 			if err != nil {
 				continue
 			}
@@ -344,62 +340,49 @@ func main() {
 				continue
 			}
 			
-			status := testResp.StatusCode
-			var testHash string
-			
-			// Hash content for ALL responses (not just 200s)
-			if status != 404 {
+			if testResp.StatusCode == 200 {
 				lr := io.LimitReader(testResp.Body, 256*1024)
 				h := sha1.New()
 				io.Copy(h, lr)
-				testHash = fmt.Sprintf("%x", h.Sum(nil))
+				testHash := fmt.Sprintf("%x", h.Sum(nil))
+				testResp.Body.Close()
+				testHashes = append(testHashes, testHash)
+				
+				if debug {
+					log.Printf("DEBUG: Pre-scan %s returned hash %s", testURL, testHash)
+				}
+			} else {
+				testResp.Body.Close()
 			}
-			testResp.Body.Close()
+		}
+		
+		// Check if all test words return the same content (reflective endpoint)
+		if len(testHashes) >= 2 {
+			allSame := true
+			firstHash := testHashes[0]
+			for _, h := range testHashes[1:] {
+				if h != firstHash {
+					allSame = false
+					break
+				}
+			}
 			
-			testResults = append(testResults, testResult{hash: testHash, status: status})
-			
-			if debug {
-				log.Printf("DEBUG: Pre-scan %s returned status %d, hash %s", testURL, status, testHash)
+			if allSame {
+				pathDesc := prefix
+				if pathDesc == "" {
+					pathDesc = "root"
+				}
+				fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical content (hash: %s)\n", pathDesc, firstHash)
+				
+				if debug {
+					log.Printf("DEBUG: Reflective endpoint detected at path '%s' - blocking recursion", pathDesc)
+				}
+				return true
 			}
 		}
 		
-	// Check if all test words return the same response (status + content)
-	if len(testResults) >= 2 {
-		allSame := true
-		firstResult := testResults[0]
-		
-		// Skip pre-check if all are 404s (expected for non-existent paths)
-		if firstResult.status == 404 {
-			if debug {
-				log.Printf("DEBUG: Pre-check skipped - all test paths return 404 (expected behavior)")
-			}
-			return false
-		}
-		
-		for _, result := range testResults[1:] {
-			// Compare both status code and content hash
-			if result.status != firstResult.status || result.hash != firstResult.hash {
-				allSame = false
-				break
-			}
-		}
-		
-		if allSame {
-			pathDesc := prefix
-			if pathDesc == "" {
-				pathDesc = "root"
-			}
-			fmt.Fprintf(os.Stderr, "\n⚠️  REFLECTIVE ENDPOINT at '%s': All test paths return identical response (status: %d, hash: %s)\n", pathDesc, firstResult.status, firstResult.hash)
-			
-			if debug {
-				log.Printf("DEBUG: Reflective endpoint detected at path '%s' (status %d) - blocking recursion", pathDesc, firstResult.status)
-			}
-			return true
-		}
+		return false
 	}
-	
-	return false
-}
 
 	// Progress bar function
 	updateProgress := func() {
