@@ -273,8 +273,14 @@ func main() {
 		// Check if this content hash was seen anywhere in our known paths
 		if paths, exists := contentAncestors[contentHash]; exists {
 			for knownPath := range paths {
-				// If content was seen in a parent or related path
-				if strings.HasPrefix(currentPath, knownPath) || strings.HasPrefix(knownPath, currentPath) {
+				// Skip if it's the exact same path (avoid self-comparison)
+				if knownPath == currentPath {
+					continue
+				}
+				
+				// Check if content was seen in a parent or child path
+				// Use "/" suffix to ensure we're checking actual path hierarchy
+				if strings.HasPrefix(currentPath+"/", knownPath+"/") || strings.HasPrefix(knownPath+"/", currentPath+"/") {
 					if debug {
 						log.Printf("DEBUG: Infinite loop detected - content %s already seen at path %s (current: %s)", contentHash, knownPath, currentPath)
 					}
