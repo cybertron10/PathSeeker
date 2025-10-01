@@ -321,7 +321,28 @@ func main() {
 			log.Printf("DEBUG: Pre-checking path '%s' for reflective endpoint", checkPath)
 		}
 		
-	testWords := []string{"test123xyz", "random456abc", "check789def"}
+	// Use sample words from actual wordlist for more accurate pre-check
+	testWords := []string{}
+	if len(words) >= 10 {
+		// Pick 10 words distributed across the wordlist for better coverage
+		step := len(words) / 9
+		testWords = []string{
+			words[0],             // 0%
+			words[step],          // 11%
+			words[2*step],        // 22%
+			words[3*step],        // 33%
+			words[4*step],        // 44%
+			words[5*step],        // 55%
+			words[6*step],        // 66%
+			words[7*step],        // 77%
+			words[8*step],        // 88%
+			words[len(words)-1],  // 100%
+		}
+	} else if len(words) > 0 {
+		testWords = words
+	} else {
+		testWords = []string{"test123xyz", "random456abc", "check789def"}
+	}
 	testHashes := make([]string, 0, len(testWords))
 	
 	for _, testWord := range testWords {
