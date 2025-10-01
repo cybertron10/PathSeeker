@@ -13,9 +13,15 @@ A high-performance directory bruteforcer written in Go, featuring intelligent er
 
 ## 📋 Installation
 
+### Using Go Install (Recommended)
 ```bash
-git clone https://github.com/cybertron10/pathseeker.git
-cd pathseeker
+go install -v github.com/cybertron10/PathSeeker@latest
+```
+
+### Manual Installation
+```bash
+git clone https://github.com/cybertron10/PathSeeker.git
+cd PathSeeker
 go build -o pathseeker .
 ```
 
