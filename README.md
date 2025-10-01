@@ -1,4 +1,4 @@
-# PathSeeker - Advanced Directory Bruteforcer
+# PathSeeker - Advanced Web Crawler & Directory Bruteforcer
 
 A high-performance directory bruteforcer written in Go, featuring intelligent error tolerance, content-based deduplication, and automatic wordlist generation through web crawling.
 
