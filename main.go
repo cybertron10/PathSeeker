@@ -122,6 +122,7 @@ func main() {
 	var wordlistPath string
 	var crawlOnly bool
 	var statusExcludeStr string
+	var recursive bool
 
 	flag.StringVar(&base, "u", "", "Base URL, e.g. http://127.0.0.1/")
 	flag.IntVar(&maxDepth, "e", 1, "Error tolerance depth: 1=stop on non-200, 2=allow 1 error level, 3=allow 2 error levels")
@@ -130,6 +131,7 @@ func main() {
 	flag.StringVar(&wordlistPath, "w", "", "Wordlist file; omit value (-w) to auto-generate from crawl")
 	flag.BoolVar(&crawlOnly, "crawl-only", false, "Crawl domain and print URLs only")
 	flag.StringVar(&statusExcludeStr, "se", "404", "Status codes to exclude (comma/space-separated)")
+	flag.BoolVar(&recursive, "r", false, "Enable recursive scanning (continue fuzzing until error tolerance is reached)")
 	flag.CommandLine.Parse(filteredArgs)
 
 	if base == "" {
@@ -189,7 +191,11 @@ func main() {
 	if len(words) == 0 { fmt.Fprintln(os.Stderr, "no words provided"); os.Exit(1) }
 
 	excluded := parseExcluded(statusExcludeStr)
-	fmt.Fprintf(os.Stderr, "Scanning with %d words; error-tolerance=%d; concurrency=%d; exclude=%s\n", len(words), maxDepth, concurrency, statusExcludeStr)
+	scanMode := "single-level"
+	if recursive {
+		scanMode = "recursive"
+	}
+	fmt.Fprintf(os.Stderr, "Scanning with %d words; mode=%s; error-tolerance=%d; concurrency=%d; exclude=%s\n", len(words), scanMode, maxDepth, concurrency, statusExcludeStr)
 
 	transport := &http.Transport{
 		MaxIdleConns:        10000,
@@ -268,8 +274,8 @@ func main() {
 				code, sum, ok := requestURL(u)
 				if !ok { return }
 				
-				// Error tolerance depth logic: -d 1=stop on non-200, -d 2=allow 1 error level, -d 3=allow 2 error levels
-				if t.withSlash {
+				// Recursion logic: -r flag controls whether to recurse
+				if t.withSlash && recursive {
 					_, skip := excluded[code]
 					if !skip {
 						// Calculate new error count
