@@ -416,8 +416,8 @@ func main() {
 				}
 			}
 			
-			// Recursion logic: -r flag controls whether to recurse
-			if t.withSlash && recursive {
+		// Recursion logic: -r flag controls whether to recurse
+		if !t.withSlash && recursive {
 					_, skip := excluded[code]
 					if !skip {
 						// Calculate new error count
