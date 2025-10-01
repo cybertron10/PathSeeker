@@ -28,6 +28,7 @@ import (
 	word     string
 	depth    int
 	withSlash bool
+	errorCount int // track consecutive non-200 responses
 }
 
 func buildURL(base, prefix, word string, withSlash bool) (string, error) {
@@ -123,7 +124,7 @@ func main() {
 	var statusExcludeStr string
 
 	flag.StringVar(&base, "u", "", "Base URL, e.g. http://127.0.0.1/")
-	flag.IntVar(&maxDepth, "d", 1, "Recursion depth (0 = just base)")
+	flag.IntVar(&maxDepth, "d", 1, "Error tolerance depth: 1=stop on non-200, 2=allow 1 error level, 3=allow 2 error levels")
 	flag.IntVar(&concurrency, "c", 50, "Concurrent workers")
 	flag.StringVar(&outPath, "o", "", "Output file (optional)")
 	flag.StringVar(&wordlistPath, "w", "", "Wordlist file; omit value (-w) to auto-generate from crawl")
@@ -188,7 +189,7 @@ func main() {
 	if len(words) == 0 { fmt.Fprintln(os.Stderr, "no words provided"); os.Exit(1) }
 
 	excluded := parseExcluded(statusExcludeStr)
-	fmt.Fprintf(os.Stderr, "Scanning with %d words; depth=%d; concurrency=%d; exclude=%s\n", len(words), maxDepth, concurrency, statusExcludeStr)
+	fmt.Fprintf(os.Stderr, "Scanning with %d words; error-tolerance=%d; concurrency=%d; exclude=%s\n", len(words), maxDepth, concurrency, statusExcludeStr)
 
 	transport := &http.Transport{
 		MaxIdleConns:        10000,
@@ -246,12 +247,23 @@ func main() {
 				if err != nil { return }
 				code, sum, ok := requestURL(u)
 				if !ok { return }
-				// Recurse on slash-variant for any non-excluded status; apply content-hash pruning only for 200s within same branch
-				if t.withSlash && t.depth < maxDepth {
+				// Error tolerance depth logic: -d 1=stop on non-200, -d 2=allow 1 error level, -d 3=allow 2 error levels
+				if t.withSlash {
 					_, skip := excluded[code]
 					if !skip {
-						shouldRecurse := true
-						if code == 200 {
+						// Calculate new error count
+						newErrorCount := t.errorCount
+						if code != 200 {
+							newErrorCount++
+						} else {
+							newErrorCount = 0 // reset on 200
+						}
+						
+						// Check if we should recurse based on error tolerance
+						shouldRecurse := newErrorCount < maxDepth
+						
+						// Apply content-hash pruning for 200s to avoid duplicate content
+						if code == 200 && shouldRecurse {
 							// determine branch key (first segment under base path)
 							norm := normalizeOutputURL(u)
 							pu, perr := url.Parse(norm)
@@ -274,13 +286,14 @@ func main() {
 							shouldRecurse = (best == norm)
 							hashMu.Unlock()
 						}
+						
 						if shouldRecurse {
 							nextPrefix := path.Join(t.prefix, t.word)
 							add := len(words) * 2
 							pending.Add(add)
 							for _, w := range words {
-								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false}
-								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true}
+								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: false, errorCount: newErrorCount}
+								reqJobs <- reqTask{base: t.base, prefix: nextPrefix, word: w, depth: t.depth + 1, withSlash: true, errorCount: newErrorCount}
 							}
 						}
 					}
@@ -294,8 +307,8 @@ func main() {
 	// seed: all words at root, both variants
 	pending.Add(len(words) * 2)
 	for _, w := range words {
-		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: false}
-		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: true}
+		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: false, errorCount: 0}
+		reqJobs <- reqTask{base: base, prefix: "", word: w, depth: 0, withSlash: true, errorCount: 0}
 	}
 
 	go func() { pending.Wait(); close(reqJobs) }()
