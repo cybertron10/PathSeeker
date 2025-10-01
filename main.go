@@ -351,7 +351,14 @@ func main() {
 	for _, testWord := range testWords {
 		testURL, err := buildURL(baseURL, prefix, testWord, true)
 		if err != nil {
+			if debug {
+				log.Printf("DEBUG: Pre-check buildURL failed for word '%s': %v", testWord, err)
+			}
 			continue
+		}
+		
+		if debug {
+			log.Printf("DEBUG: Pre-check testing URL: %s", testURL)
 		}
 		
 		testReq, err := http.NewRequest(http.MethodGet, testURL, nil)
@@ -361,6 +368,9 @@ func main() {
 		
 		testResp, err := client.Do(testReq)
 		if err != nil {
+			if debug {
+				log.Printf("DEBUG: Pre-check request failed for %s: %v", testURL, err)
+			}
 			continue
 		}
 		
