@@ -212,13 +212,13 @@ func main() {
 	// final200 := make(map[string]struct{})
 	// finalMu := &sync.Mutex{}
 
-	requestURL := func(fullURL string) (int, bool) {
-		if _, loaded := seen.LoadOrStore(fullURL, struct{}{}); loaded { return 0, false }
+	requestURL := func(fullURL string) (int, string, bool) {
+		if _, loaded := seen.LoadOrStore(fullURL, struct{}{}); loaded { return 0, "", false }
 		req, err := http.NewRequest(http.MethodGet, fullURL, nil)
-		if err != nil { return 0, false }
+		if err != nil { return 0, "", false }
 		req.Header.Set("Connection", "keep-alive")
 		resp, err := client.Do(req)
-		if err != nil { return 0, false }
+		if err != nil { return 0, "", false }
 		code := resp.StatusCode
 		var sum string
 		if code == 200 {
@@ -241,9 +241,9 @@ func main() {
 				}
 				hashMu.Unlock()
 			}
-			return code, true
+			return code, sum, true
 		}
-		return code, false
+		return code, sum, false
 	}
 
 	worker := func() {
@@ -253,16 +253,14 @@ func main() {
 				defer pending.Done()
 				u, err := buildURL(t.base, t.prefix, t.word, t.withSlash)
 				if err != nil { return }
-				code, ok := requestURL(u)
+				code, sum, ok := requestURL(u)
 				if !ok { return }
-				// prune recursion if same-content already seen at a shorter or equal path
+				// prune recursion if same-content already seen; only recurse from the shortest path
 				if t.withSlash && code == 200 && t.depth < maxDepth {
+					norm := normalizeOutputURL(u)
 					hashMu.Lock()
-					best, exists := hashBest[sum]
-					if !exists || len(u) < len(best) {
-						hashBest[sum] = u
-					}
-					shouldRecurse := !exists || len(u) <= len(best)
+					best := hashBest[sum]
+					shouldRecurse := (best == norm)
 					hashMu.Unlock()
 					if shouldRecurse {
 						nextPrefix := path.Join(t.prefix, t.word)
