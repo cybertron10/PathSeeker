@@ -1,4 +1,0 @@
-Crawled URLs for https://public-firing-range.appspot.com/reflected (scan_id: crawl_only_1759306301)
-Total URLs found: 1
-
-1. https://public-firing-range.appspot.com/reflected
