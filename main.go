@@ -330,11 +330,21 @@ func main() {
 				if debug {
 					log.Printf("DEBUG: Built URL %s from task %+v", u, t)
 				}
-				code, sum, ok := requestURL(u)
-				if !ok { return }
-				
-				// Recursion logic: -r flag controls whether to recurse
-				if t.withSlash && recursive {
+			code, sum, ok := requestURL(u)
+			if !ok { return }
+			
+			// Record all 200 responses with their content hash for loop detection
+			if code == 200 && sum != "" {
+				parsedURL, err := url.Parse(u)
+				if err == nil {
+					currentPath := parsedURL.Path
+					// Always record 200 responses so future requests can detect loops
+					recordPathContent(sum, currentPath)
+				}
+			}
+			
+			// Recursion logic: -r flag controls whether to recurse
+			if t.withSlash && recursive {
 					_, skip := excluded[code]
 					if !skip {
 						// Calculate new error count
@@ -396,9 +406,6 @@ func main() {
 								if debug {
 									log.Printf("DEBUG: Blocked recursion for %s due to infinite loop", u)
 								}
-							} else {
-								// Only record if we're going to recurse
-								recordPathContent(sum, currentPath)
 							}
 						}
 					}
